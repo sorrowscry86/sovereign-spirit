@@ -53,6 +53,7 @@ class Chronicler:
     async def get_timeline(self, limit: int = 100) -> List[TimelineEvent]:
         """
         Fetch and merge events from all sources into a Chronological timeline.
+        Uses a UNION query for efficiency (single round-trip).
         Ordered by timestamp DESC (newest first).
         """
         if not self.db._initialized:
@@ -61,62 +62,69 @@ class Chronicler:
         events: List[TimelineEvent] = []
 
         async with self.db.session() as session:
-            # 1. Fetch Heartbeats
-            hb_query = text("""
-                SELECT h.id, h.created_at, a.name, a.id as agent_uuid, 
-                       h.action_taken, h.thought_content
-                FROM heartbeat_logs h
-                JOIN agents a ON h.agent_id = a.id
-                ORDER BY h.created_at DESC
+            # Unified UNION query - single round-trip instead of N+1
+            unified_query = text("""
+                (
+                    SELECT
+                        h.id::text as event_id,
+                        h.created_at as timestamp,
+                        a.name as actor_name,
+                        a.id::text as actor_id,
+                        'HEARTBEAT' as event_type,
+                        h.action_taken as action_or_status,
+                        h.thought_content as content,
+                        NULL::text as target_id
+                    FROM heartbeat_logs h
+                    JOIN agents a ON h.agent_id = a.id
+                )
+                UNION ALL
+                (
+                    SELECT
+                        m.id::text as event_id,
+                        m.created_at as timestamp,
+                        a.name as actor_name,
+                        a.id::text as actor_id,
+                        'MESSAGE_SENT' as event_type,
+                        m.status as action_or_status,
+                        m.content as content,
+                        m.to_agent_id::text as target_id
+                    FROM agent_messages m
+                    JOIN agents a ON m.from_agent_id = a.id
+                )
+                ORDER BY timestamp DESC
                 LIMIT :limit
             """)
-            hb_result = await session.execute(hb_query, {"limit": limit})
-            
-            for row in hb_result:
-                events.append(TimelineEvent(
-                    event_id=str(row.id),
-                    timestamp=row.created_at,
-                    actor_name=row.name,
-                    actor_id=str(row.agent_uuid),
-                    event_type="HEARTBEAT",
-                    summary=f"Pulse: {row.action_taken}",
-                    details=row.thought_content,
-                    metadata={"action": row.action_taken}
-                ))
 
-            # 2. Fetch Messages (Sent)
-            msg_query = text("""
-                SELECT m.id, m.created_at, a.name, a.id as agent_uuid,
-                       m.content, m.status, m.to_agent_id
-                FROM agent_messages m
-                JOIN agents a ON m.from_agent_id = a.id
-                ORDER BY m.created_at DESC
-                LIMIT :limit
-            """)
-            msg_result = await session.execute(msg_query, {"limit": limit})
-            
-            for row in msg_result:
-                # Try to resolve target name if possible (simple optimization)
-                target_name = "Unknown"
-                # We could join again, but for now let's keep it simple or do a separate lookup dict if needed.
-                # actually, 'to_agent_id' is a UUID. 
-                
-                events.append(TimelineEvent(
-                    event_id=str(row.id),
-                    timestamp=row.created_at,
-                    actor_name=row.name,
-                    actor_id=str(row.agent_uuid),
-                    event_type="MESSAGE_SENT",
-                    summary=f"Sent Message ({row.status})",
-                    details=row.content,
-                    metadata={"status": row.status, "to_agent_id": str(row.to_agent_id) if row.to_agent_id else None}
-                ))
+            result = await session.execute(unified_query, {"limit": limit})
 
-        # 3. Sort merged list by timestamp DESC
-        events.sort(key=lambda x: x.timestamp, reverse=True)
-        
-        # Return top N after merge
-        return events[:limit]
+            for row in result:
+                if row.event_type == "HEARTBEAT":
+                    events.append(TimelineEvent(
+                        event_id=row.event_id,
+                        timestamp=row.timestamp,
+                        actor_name=row.actor_name,
+                        actor_id=row.actor_id,
+                        event_type="HEARTBEAT",
+                        summary=f"Pulse: {row.action_or_status}",
+                        details=row.content,
+                        metadata={"action": row.action_or_status}
+                    ))
+                else:
+                    events.append(TimelineEvent(
+                        event_id=row.event_id,
+                        timestamp=row.timestamp,
+                        actor_name=row.actor_name,
+                        actor_id=row.actor_id,
+                        event_type="MESSAGE_SENT",
+                        summary=f"Sent Message ({row.action_or_status})",
+                        details=row.content,
+                        metadata={
+                            "status": row.action_or_status,
+                            "to_agent_id": row.target_id
+                        }
+                    ))
+
+        return events
 
 #Singleton
 _chronicler: Optional[Chronicler] = None
