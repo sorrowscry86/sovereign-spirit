@@ -27,6 +27,7 @@ from src.core.database import (
 )
 from src.core.graph import GraphClient, get_graph, TaskNode
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
+from src.middleware.security import sanitize_message_content
 from src.core.identity.manager import get_identity_manager
 
 logger = logging.getLogger("sovereign.api.agents")
@@ -167,11 +168,14 @@ async def process_stimuli(
     agent = await db.get_agent_state(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-    
-    # Record stimuli
+
+    # Sanitize message content to prevent XSS/injection
+    sanitized_message = sanitize_message_content(request.message)
+
+    # Record stimuli with sanitized content
     stimuli = StimuliRecord(
         agent_id=agent_id,
-        content=request.message,
+        content=sanitized_message,
         source=request.source,
     )
     message_id = await db.record_stimuli(stimuli)
