@@ -110,29 +110,33 @@
 ## PHASE 4: EFFICIENCY & MANA FLOW
 *Optimizations for resource usage and performance.*
 
-- [ ] **PERF-001**: Synchronous Weaviate calls in async context
+- [x] **PERF-001**: Synchronous Weaviate calls in async context
   - **Severity**: MEDIUM
   - **File**: `src/core/vector.py`
   - **Description**: Weaviate v4 client operations block the event loop.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Wrapped sync operations with `asyncio.to_thread()` for non-blocking execution.
 
-- [ ] **PERF-002**: N+1 query pattern in Chronicler
+- [x] **PERF-002**: N+1 query pattern in Chronicler
   - **Severity**: MEDIUM
   - **File**: `src/core/chronicler.py`
   - **Description**: Two separate queries then merge; could be unified.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Replaced two queries with single UNION ALL query for single round-trip.
 
-- [ ] **PERF-003**: Inefficient memory list processing in valence stripping
+- [x] **PERF-003**: Inefficient memory list processing in valence stripping
   - **Severity**: LOW
-  - **File**: `src/middleware/valence_stripping.py:92`
+  - **File**: `src/middleware/valence_stripping.py`
   - **Description**: Creates new objects for all memories; could use in-place modification.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Using `dataclasses.replace()` for efficient partial object copying.
 
-- [ ] **PERF-004**: Missing database connection pooling configuration
+- [x] **PERF-004**: Missing database connection pooling configuration
   - **Severity**: LOW
   - **File**: `src/core/database.py`
   - **Description**: Pool settings are set but not exposed for configuration.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added `DB_POOL_SIZE`, `DB_POOL_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE` env vars.
 
 ---
 
@@ -227,11 +231,11 @@
 | Phase 1: CRITICAL STABILIZATION | 4 | 4 | 100% |
 | Phase 2: CORE MATRIX | 5 | 5 | 100% |
 | Phase 3: WARDS & SECURITY | 4 | 4 | 100% |
-| Phase 4: EFFICIENCY & FLOW | 4 | 0 | 0% |
+| Phase 4: EFFICIENCY & FLOW | 4 | 4 | 100% |
 | Phase 5: HIGHER FUNCTIONS | 4 | 0 | 0% |
 | Phase 6: THE GRIMOIRE | 4 | 0 | 0% |
 | Phase 7: FUTURE ASCENSION | 6 | 0 | 0% |
-| **OVERALL** | **31** | **13** | **42%** |
+| **OVERALL** | **31** | **17** | **55%** |
 
 ---
 
