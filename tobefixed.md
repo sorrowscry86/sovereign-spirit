@@ -11,57 +11,66 @@
 - [x] **CRIT-001**: Duplicate return statements in `src/main.py:126-137`
   - **Severity**: CRITICAL
   - **Description**: The `health_check()` function contains duplicate return statement blocks, causing syntax chaos.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Unified the duplicate return statements into a single coherent block.
 
 - [x] **CRIT-002**: Missing `Field` import in `src/core/database.py:48`
   - **Severity**: CRITICAL
   - **Description**: `AgentState` model uses `Field(default_factory=...)` without importing `Field` from pydantic.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added `Field` to pydantic import statement.
 
-- [ ] **CRIT-003**: Non-existent module `src/core/inference/prompts`
+- [x] **CRIT-003**: Non-existent module `src/core/inference/prompts`
   - **Severity**: CRITICAL
   - **Description**: `src/core/identity/manager.py:13` imports `build_system_prompt` from a module that does not exist.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Module exists; added proper exports to `__init__.py`.
 
-- [ ] **CRIT-004**: Hardcoded Windows path in `src/core/identity/sync.py:22`
+- [x] **CRIT-004**: Hardcoded Windows path in `src/core/identity/sync.py:22`
   - **Severity**: CRITICAL
   - **Description**: `PANTHEON_PROFILES_DIR` uses a Windows-specific path that breaks on Linux/Docker.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Changed to environment variable `PANTHEON_PROFILES_DIR` with relative fallback.
 
 ---
 
 ## PHASE 2: CORE MATRIX INTEGRITY
 *Structural dissonances that undermine reliability.*
 
-- [ ] **HIGH-001**: Inconsistent case handling in valence stripping
+- [x] **HIGH-001**: Inconsistent case handling in valence stripping
   - **Severity**: HIGH
   - **File**: `src/core/memory/prism.py:111` vs `src/middleware/valence_stripping.py:76`
   - **Description**: Prism uses `.lower()` comparison; middleware does not. Soul Bleed possible.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added `.lower()` comparison to valence_stripping.py for consistency.
 
-- [ ] **HIGH-002**: Missing agent_id validation/sanitization
+- [x] **HIGH-002**: Missing agent_id validation/sanitization
   - **Severity**: HIGH
   - **File**: `src/api/agents.py`
   - **Description**: Agent IDs passed directly to SQL queries without format validation.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added `validate_agent_id()` function and Path validation on all endpoints.
 
-- [ ] **HIGH-003**: Unclosed httpx.AsyncClient in LLMClient
+- [x] **HIGH-003**: Unclosed httpx.AsyncClient in LLMClient
   - **Severity**: HIGH
   - **File**: `src/core/llm_client.py:130`
   - **Description**: The client is created but `shutdown_llm_client()` is never called in lifespan.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added `shutdown_llm_client()` call to main.py lifespan shutdown.
 
-- [ ] **HIGH-004**: Missing Vector/Cache client shutdown in lifespan
+- [x] **HIGH-004**: Missing Vector/Cache client shutdown in lifespan
   - **Severity**: HIGH
   - **File**: `src/main.py`
   - **Description**: Weaviate and Redis clients are never explicitly closed on shutdown.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added explicit close() calls for vector and cache clients in lifespan.
 
-- [ ] **HIGH-005**: Hardcoded default agents in HeartbeatService
+- [x] **HIGH-005**: Hardcoded default agents in HeartbeatService
   - **Severity**: HIGH
   - **File**: `src/core/heartbeat/service.py:79`
   - **Description**: `["echo", "ryuzu", "beatrice"]` hardcoded; should be configurable.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Made configurable via `SOVEREIGN_DEFAULT_AGENTS` environment variable.
 
 ---
 
@@ -211,14 +220,14 @@
 
 | Phase | Total | Complete | Percentage |
 |:------|:------|:---------|:-----------|
-| Phase 1: CRITICAL STABILIZATION | 4 | 0 | 0% |
-| Phase 2: CORE MATRIX | 5 | 0 | 0% |
+| Phase 1: CRITICAL STABILIZATION | 4 | 4 | 100% |
+| Phase 2: CORE MATRIX | 5 | 5 | 100% |
 | Phase 3: WARDS & SECURITY | 4 | 0 | 0% |
 | Phase 4: EFFICIENCY & FLOW | 4 | 0 | 0% |
 | Phase 5: HIGHER FUNCTIONS | 4 | 0 | 0% |
 | Phase 6: THE GRIMOIRE | 4 | 0 | 0% |
 | Phase 7: FUTURE ASCENSION | 6 | 0 | 0% |
-| **OVERALL** | **31** | **0** | **0%** |
+| **OVERALL** | **31** | **9** | **29%** |
 
 ---
 

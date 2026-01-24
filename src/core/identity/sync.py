@@ -18,8 +18,11 @@ from sqlalchemy import text
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sovereign.identity.sync")
 
-# PATHS
-PANTHEON_PROFILES_DIR = Path(r"C:\Users\Wykeve\Projects\The Great Library\00_The_Pantheon\01_Active_Profiles")
+# PATHS - Use environment variable with fallback to local profiles directory
+PANTHEON_PROFILES_DIR = Path(
+    os.getenv("PANTHEON_PROFILES_DIR",
+              os.path.join(os.path.dirname(__file__), "..", "..", "..", "profiles"))
+)
 
 class PersonaParser:
     """Parses SDS v2 Markdown files into structured dictionary for DB ingestion."""
