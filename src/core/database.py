@@ -45,6 +45,9 @@ class AgentState(BaseModel):
     designation: str
     current_mood: str
     system_prompt: str
+    traits: Dict[str, Any] = Field(default_factory=dict)
+    behavior_modes: Dict[str, Any] = Field(default_factory=dict)
+    expertise_tags: List[str] = Field(default_factory=list)
     last_active: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
@@ -164,7 +167,9 @@ class DatabaseClient:
             result = await session.execute(
                 text("""
                     SELECT id, name, designation, current_mood, 
-                           system_prompt_template, last_active_at, created_at
+                           system_prompt_template, traits_json, 
+                           behavior_modes, expertise_tags,
+                           last_active_at, created_at
                     FROM agents
                     WHERE LOWER(name) = LOWER(:agent_name)
                 """),
@@ -172,12 +177,21 @@ class DatabaseClient:
             )
             row = result.fetchone()
             if row:
+                import json
+                
+                # Handle JSON fields that might be strings or dicts depending on driver
+                traits = row.traits_json if isinstance(row.traits_json, dict) else json.loads(row.traits_json or "{}")
+                modes = row.behavior_modes if isinstance(row.behavior_modes, dict) else json.loads(row.behavior_modes or "{}")
+                
                 return AgentState(
-                    agent_id=row.name.lower(),  # Use name as agent_id
+                    agent_id=row.name.lower(),
                     name=row.name,
                     designation=row.designation or "",
                     current_mood=row.current_mood or "Neutral",
                     system_prompt=row.system_prompt_template or "",
+                    traits=traits,
+                    behavior_modes=modes,
+                    expertise_tags=row.expertise_tags or [],
                     last_active=row.last_active_at,
                     created_at=row.created_at,
                 )

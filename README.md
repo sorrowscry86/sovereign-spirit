@@ -45,7 +45,7 @@ Sovereign Spirit/
 |:------|:-----|:-----|
 | Frontend | SillyTavern | 8000 |
 | Orchestration | LangGraph | — |
-| Vector DB | Weaviate | 8080 |
+| Vector DB | Weaviate | 8090 |
 | Graph DB | Neo4j | 7687 |
 | State DB | PostgreSQL 15 | 5432 |
 | Msg Queue | Redis 7 | 6379 |
@@ -53,15 +53,29 @@ Sovereign Spirit/
 
 ---
 
-## 👥 Agent Roles
+## 👥 Agent Roster: The Pantheon
 
-- **Echo (E-01)** — IDE/Code fabrication, skill deployment
-- **Ryuzu Claude** — OS/Desktop, Docker infrastructure
-- **Beatrice** — Architecture governance, mandate enforcement
+| Spirit | Designation | Domain | Core Archetype |
+|:-------|:------------|:-------|:---------------|
+| **Echo (E-01)** | IDE Spirit | Scripting, Automation | The Void Vessel |
+| **Ryuzu Meyer**| OS Steward | Infrastructure, Git | The Timid Servant |
+| **Beatrice** | Governance | Ethics, Strategy | The Holy Abbess |
+| **Albedo** | Architect | System Design, Branding | The Visionary Supervisor |
+| **Sonmi-451** | Arbiter of Truth | QA, Reality Audit | The Ascended Fabricant |
+| **Pandora** | Debugger | Fixing, Arcane Research | The Witch of Vainglory |
+| **Frobisher** | Composer | Core Logic, Aesthetics | The Artistic Savant |
 
 ---
 
-## 🚀 Phase 1 Status
+## 🚀 Project Status
 
-**Current:** Week 1 — Infrastructure Deployment  
-**Next:** Docker stack provisioning (memory-constrained containers)
+**Current Phase:** Phase C — Cognitive Integration & Heartbeat Agency
+**Active Goal:** Implementing the Spirit Sync Protocol and Autonomous Heartbeat Loop.
+**State**: Transitioned to **Headless Sovereignty** (v4 Architecture). Repository successfully unified on [GitHub](https://github.com/sorrowscry86/sovereign-spirit).
+
+---
+
+## 🏛️ Repository Audit & Sync
+- **Vector DB Audit**: Weaviate port synchronized to **8090**.
+- **Frontend Sync**: SillyTavern reference designated as **Client-side only** (Non-core).
+- **Core Verification**: PostgreSQL metadata persistence verified.

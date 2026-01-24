@@ -26,6 +26,7 @@ from src.core.database import (
 )
 from src.core.graph import GraphClient, get_graph, TaskNode
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
+from src.core.identity.manager import get_identity_manager
 
 logger = logging.getLogger("sovereign.api.agents")
 
@@ -84,6 +85,20 @@ class CycleResponse(BaseModel):
     action: str
     details: Optional[str]
     cycle_id: str
+    timestamp: datetime
+
+
+class SyncRequest(BaseModel):
+    """Request body for initiating a Spirit Sync."""
+    target_spirit: str = Field(..., min_length=1, max_length=100)
+    
+    
+class SyncResponse(BaseModel):
+    """Response after a successful Spirit Sync."""
+    status: str
+    agent_id: str
+    synced_to: str
+    designation: str
     timestamp: datetime
 
 
@@ -232,6 +247,45 @@ async def get_agent_memories(
         agent_id=agent_id,
         memories=memories,
         count=len(memories),
+    )
+
+
+@router.post("/{agent_id}/sync", response_model=SyncResponse)
+async def trigger_spirit_sync(
+    agent_id: str,
+    request: SyncRequest,
+    db: DatabaseClient = Depends(get_db),
+):
+    """
+    Manually trigger a Spirit Sync for an agent body.
+    
+    Allows an agent to manifest the DNA/Identity of another spirit.
+    """
+    manager = get_identity_manager(db)
+    updated_state = await manager.sync_agent_identity(agent_id, request.target_spirit)
+    
+    if not updated_state:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Sync failed: Target spirit '{request.target_spirit}' not found."
+        )
+        
+    # Broadcast via WebSocket
+    from src.core.socket_manager import get_connection_manager
+    ws_manager = get_connection_manager()
+    await ws_manager.broadcast("SYNC_UPDATE", {
+        "agent_id": agent_id,
+        "synced_to": updated_state.name,
+        "designation": updated_state.designation,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
+    return SyncResponse(
+        status="synchronized",
+        agent_id=agent_id,
+        synced_to=updated_state.name,
+        designation=updated_state.designation,
+        timestamp=datetime.utcnow(),
     )
 
 

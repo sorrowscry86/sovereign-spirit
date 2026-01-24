@@ -1,29 +1,53 @@
-
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Outlet } from 'react-router-dom';
 import { LayoutDashboard, MessageSquare, Settings, Activity } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
+
+// Inject Google Fonts
+const injectFonts = () => {
+  const link = document.createElement('link');
+  link.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@600;700&display=swap';
+  link.rel = 'stylesheet';
+  document.head.appendChild(link);
+};
 
 // Placeholder for future modules
 const Chat = () => <div className="glass-panel" style={{ margin: '2rem' }}><h2>Comm Link Offline</h2><p>Module under construction.</p></div>;
 const Config = () => <div className="glass-panel" style={{ margin: '2rem' }}><h2>Configuration</h2><p>Restricted Access.</p></div>;
 
 function AppShell() {
+  useEffect(() => {
+    injectFonts();
+  }, []);
+
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
+    <div style={{
+      display: 'flex',
+      height: '100vh',
+      width: '100vw',
+      backgroundColor: 'var(--void-bg)',
+      color: 'var(--text-primary)',
+      overflow: 'hidden'
+    }}>
       {/* SIDEBAR */}
       <nav style={{
-        width: '64px',
-        borderRight: 'var(--void-border)',
-        backgroundColor: 'var(--void-surface)',
+        width: '72px',
+        borderRight: '1px solid var(--void-border)',
+        backgroundColor: 'rgba(10, 15, 20, 0.8)',
+        backdropFilter: 'blur(20px)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        paddingTop: '20px',
-        zIndex: 10
+        paddingTop: '24px',
+        zIndex: 100,
+        boxShadow: '4px 0 24px rgba(0,0,0,0.5)'
       }}>
         {/* LOGO */}
-        <div style={{ marginBottom: '40px', color: 'var(--neon-cyan)' }}>
+        <div style={{
+          marginBottom: '48px',
+          color: 'var(--neon-cyan)',
+          filter: 'drop-shadow(0 0 10px rgba(0, 229, 255, 0.4))'
+        }}>
           <Activity size={32} />
         </div>
 
@@ -34,17 +58,37 @@ function AppShell() {
       </nav>
 
       {/* MAIN CONTENT AREA */}
-      <main style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-        {/* Background Ambient Glow */}
+      <main style={{
+        flex: 1,
+        overflow: 'hidden',
+        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column'
+      }}>
+        {/* Glacial Cyan Ambient Aura */}
         <div style={{
           position: 'absolute',
-          top: '-50%', left: '-50%',
-          width: '200%', height: '200%',
-          background: 'radial-gradient(circle at center, rgba(88, 166, 255, 0.05) 0%, transparent 50%)',
-          pointerEvents: 'none'
+          top: '-20%', right: '-10%',
+          width: '60%', height: '60%',
+          background: 'radial-gradient(circle at center, rgba(0, 229, 255, 0.08) 0%, transparent 60%)',
+          pointerEvents: 'none',
+          filter: 'blur(80px)',
+          zIndex: 0
         }} />
 
-        <Outlet />
+        <div style={{
+          position: 'absolute',
+          bottom: '-10%', left: '-5%',
+          width: '40%', height: '40%',
+          background: 'radial-gradient(circle at center, rgba(157, 80, 187, 0.05) 0%, transparent 60%)',
+          pointerEvents: 'none',
+          filter: 'blur(60px)',
+          zIndex: 0
+        }} />
+
+        <div style={{ flex: 1, overflowY: 'auto', position: 'relative', zIndex: 1 }}>
+          <Outlet />
+        </div>
       </main>
     </div>
   );
