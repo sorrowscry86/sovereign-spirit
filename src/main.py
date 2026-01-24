@@ -21,10 +21,14 @@ import httpx
 from fastapi import FastAPI, Request, Header, HTTPException
 
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
+from src.middleware.security import verify_api_key, check_rate_limit
 from src.api.agents import router as agents_router
 from src.core.database import get_database
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
+from src.core.vector import get_vector_client
+from src.core.cache import get_cache
+from src.core.llm_client import shutdown_llm_client
 
 # =============================================================================
 # Configuration
@@ -88,11 +92,40 @@ async def lifespan(app: FastAPI):
     
     # Stop heartbeat service
     await heartbeat.stop()
-    
+
     # Cleanup
     logger.info("=== SOVEREIGN SPIRIT MIDDLEWARE SHUTTING DOWN ===")
+
+    # Close all clients gracefully
     await db.close()
+    logger.info("PostgreSQL connection closed")
+
     await graph.close()
+    logger.info("Neo4j connection closed")
+
+    # Close vector client (Weaviate)
+    try:
+        vector = get_vector_client()
+        await vector.close()
+        logger.info("Weaviate connection closed")
+    except Exception as e:
+        logger.warning(f"Weaviate shutdown warning: {e}")
+
+    # Close cache client (Redis)
+    try:
+        cache = get_cache()
+        await cache.close()
+        logger.info("Redis connection closed")
+    except Exception as e:
+        logger.warning(f"Redis shutdown warning: {e}")
+
+    # Close LLM client (httpx)
+    try:
+        await shutdown_llm_client()
+        logger.info("LLM client closed")
+    except Exception as e:
+        logger.warning(f"LLM client shutdown warning: {e}")
+
     logger.info("=== SHUTDOWN COMPLETE ===")
 
 # =============================================================================
@@ -105,6 +138,30 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# =============================================================================
+# Security Middleware
+# =============================================================================
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """
+    Apply security checks to all incoming requests.
+
+    - Rate limiting
+    - API key verification (if enabled)
+    """
+    # Check rate limit first
+    await check_rate_limit(request)
+
+    # Verify API key (if enabled)
+    await verify_api_key(request)
+
+    # Proceed with request
+    response = await call_next(request)
+    return response
+
 
 # Mount routers
 app.include_router(agents_router)
@@ -126,12 +183,7 @@ async def health_check():
     return {
         "status": "online",
         "version": "1.0.0",
-    proxy_target = WEAVIATE_URL
-    
-    return {
-        "status": "online",
-        "version": "1.0.0",
-        "proxy_target": proxy_target,
+        "proxy_target": WEAVIATE_URL,
         "database": "connected" if db._initialized else "disconnected",
         "graph": "connected" if graph._initialized else "disconnected",
     }

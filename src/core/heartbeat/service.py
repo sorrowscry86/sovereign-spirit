@@ -11,6 +11,7 @@ Manages autonomous background operation of Sovereign Spirit agents.
 
 import asyncio
 import logging
+import os
 from typing import Optional, Dict, List, Set
 
 from src.core.heartbeat.pulse import (
@@ -75,8 +76,10 @@ class HeartbeatService:
             for agent_id in agent_ids:
                 await self.register_agent(agent_id)
         else:
-            # Load default agents (echo, ryuzu, beatrice)
-            default_agents = ["echo", "ryuzu", "beatrice"]
+            # Load default agents from environment variable or use defaults
+            # Format: SOVEREIGN_DEFAULT_AGENTS="echo,ryuzu,beatrice"
+            default_agents_str = os.getenv("SOVEREIGN_DEFAULT_AGENTS", "echo,ryuzu,beatrice")
+            default_agents = [a.strip() for a in default_agents_str.split(",") if a.strip()]
             for agent_id in default_agents:
                 agent = await self._db.get_agent_state(agent_id)
                 if agent:

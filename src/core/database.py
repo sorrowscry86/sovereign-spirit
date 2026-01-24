@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
 )
 from sqlalchemy import text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger("sovereign.database")
 
@@ -33,6 +33,12 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://voidcat:sovereign_spirit@postgres:5432/voidcat_rdc"
 )
+
+# Connection pool configuration (tunable via environment)
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+DB_POOL_OVERFLOW = int(os.getenv("DB_POOL_OVERFLOW", "10"))
+DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))  # 30 minutes
 
 # =============================================================================
 # Pydantic Models
@@ -86,8 +92,10 @@ class DatabaseClient:
     def __init__(self, database_url: str = DATABASE_URL):
         self._engine = create_async_engine(
             database_url,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=DB_POOL_SIZE,
+            max_overflow=DB_POOL_OVERFLOW,
+            pool_timeout=DB_POOL_TIMEOUT,
+            pool_recycle=DB_POOL_RECYCLE,
             pool_pre_ping=True,
             echo=False,
         )

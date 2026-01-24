@@ -23,7 +23,7 @@ USAGE:
     between SillyTavern and the Weaviate vector database.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 from enum import Enum
 
@@ -73,19 +73,16 @@ def strip_valence(memory: MemoryObject, requesting_agent_id: str) -> MemoryObjec
     Returns:
         Sanitized MemoryObject (original if author matches, stripped otherwise)
     """
-    if memory.author_id == requesting_agent_id:
-        # Author is requesting their own memory - pass intact
+    if memory.author_id.lower() == requesting_agent_id.lower():
+        # Author is requesting their own memory - pass intact (case-insensitive)
         return memory
-    
-    # Foreign memory detected - apply stripping
-    return MemoryObject(
-        memory_id=memory.memory_id,
-        author_id=memory.author_id,
-        objective_fact=memory.objective_fact,  # PRESERVED
-        subjective_voice="",                    # WIPED
-        emotional_valence=0.0,                  # RESET TO NEUTRAL
-        timestamp=memory.timestamp,
-        tags=memory.tags
+
+    # Foreign memory detected - use dataclasses.replace() for efficiency
+    # Only modifies the stripped fields, preserves references to unchanged data
+    return replace(
+        memory,
+        subjective_voice="",     # WIPED
+        emotional_valence=0.0,   # RESET TO NEUTRAL
     )
 
 

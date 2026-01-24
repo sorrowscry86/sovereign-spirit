@@ -2,9 +2,13 @@
 VoidCat RDC: Sovereign Spirit Core - Vector Client
 ==================================================
 Wrapper for Weaviate vector database operations.
+
+Note: Weaviate v4 client operations are synchronous.
+We wrap them with asyncio.to_thread() to prevent blocking the event loop.
 """
 
 import os
+import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -88,36 +92,53 @@ class VectorClient:
                 vectorizer_config=Configure.Vectorizer.text2vec_transformers() # Uses the module in docker-compose
             )
 
+    def _search_sync(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Synchronous search implementation (runs in thread pool)."""
+        collection = self._client.collections.get("EpisodicMemory")
+        response = collection.query.near_text(
+            query=query,
+            limit=limit
+        )
+
+        memories = []
+        for obj in response.objects:
+            props = obj.properties
+            # Multi-field fallback for architectural transitions
+            ts = props.get("timestamp") or props.get("created_at") or datetime.now().isoformat()
+
+            memories.append({
+                "author_id": props.get("author_id"),
+                "content": props.get("content"),
+                "subjective_voice": props.get("subjective_voice"),
+                "emotional_valence": props.get("emotional_valence"),
+                "timestamp": ts,
+                "tags": props.get("tags", [])
+            })
+        return memories
+
     async def search(self, query: str, agent_id: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Perform semantic search for memories relevant to an agent."""
         if not self._client or not self._initialized:
             return []
 
         try:
-            collection = self._client.collections.get("EpisodicMemory")
-            response = collection.query.near_text(
-                query=query,
-                limit=limit
-            )
-            
-            memories = []
-            for obj in response.objects:
-                props = obj.properties
-                # Multi-field fallback for architectural transitions
-                ts = props.get("timestamp") or props.get("created_at") or datetime.now().isoformat()
-                
-                memories.append({
-                    "author_id": props.get("author_id"),
-                    "content": props.get("content"),
-                    "subjective_voice": props.get("subjective_voice"),
-                    "emotional_valence": props.get("emotional_valence"),
-                    "timestamp": ts,
-                    "tags": props.get("tags", [])
-                })
-            return memories
+            # Run synchronous Weaviate call in thread pool to avoid blocking
+            return await asyncio.to_thread(self._search_sync, query, limit)
         except Exception as e:
             logger.error(f"Weaviate search failed: {e}")
             return []
+
+    def _insert_sync(self, memory: Dict[str, Any]) -> str:
+        """Synchronous insert implementation (runs in thread pool)."""
+        collection = self._client.collections.get("EpisodicMemory")
+
+        # Ensure timestamp exists before insertion
+        if "timestamp" not in memory:
+            memory["timestamp"] = datetime.now().isoformat()
+
+        # Weaviate v4 accepts a dict directly
+        uuid = collection.data.insert(properties=memory)
+        return str(uuid)
 
     async def insert_memory(self, memory: Dict[str, Any]) -> str:
         """Insert a new memory object into Weaviate."""
@@ -125,15 +146,8 @@ class VectorClient:
             return ""
 
         try:
-            collection = self._client.collections.get("EpisodicMemory")
-            
-            # Ensure timestamp exists before insertion
-            if "timestamp" not in memory:
-                memory["timestamp"] = datetime.now().isoformat()
-            
-            # Weaviate v4 accepts a dict directly
-            uuid = collection.data.insert(properties=memory)
-            return str(uuid)
+            # Run synchronous Weaviate call in thread pool to avoid blocking
+            return await asyncio.to_thread(self._insert_sync, memory)
         except Exception as e:
             logger.error(f"Weaviate insert failed: {e}")
             return ""

@@ -10,11 +10,12 @@ Implements the four core endpoints defined in PRODUCT_DEFINITION.md.
 """
 
 import logging
+import re
 import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Path
 from pydantic import BaseModel, Field
 
 from src.core.database import (
@@ -26,6 +27,7 @@ from src.core.database import (
 )
 from src.core.graph import GraphClient, get_graph, TaskNode
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
+from src.middleware.security import sanitize_message_content
 from src.core.identity.manager import get_identity_manager
 
 logger = logging.getLogger("sovereign.api.agents")
@@ -103,6 +105,28 @@ class SyncResponse(BaseModel):
 
 
 # =============================================================================
+# Validation
+# =============================================================================
+
+# Agent ID must be alphanumeric with underscores/hyphens, 1-50 chars
+AGENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,50}$")
+
+
+def validate_agent_id(agent_id: str) -> str:
+    """
+    Validate agent_id format to prevent injection attacks.
+
+    Raises HTTPException if validation fails.
+    """
+    if not AGENT_ID_PATTERN.match(agent_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid agent_id format. Must be 1-50 alphanumeric characters, underscores, or hyphens."
+        )
+    return agent_id.lower()
+
+
+# =============================================================================
 # Dependency Injection
 # =============================================================================
 
@@ -128,13 +152,13 @@ async def get_graph_db() -> GraphClient:
 
 @router.post("/{agent_id}/stimuli", response_model=StimuliResponse)
 async def process_stimuli(
-    agent_id: str = Path(..., min_length=1, max_length=50),
-    request: StimuliRequest,
+    agent_id: str = Path(..., min_length=1, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$"),
+    request: StimuliRequest = None,
     db: DatabaseClient = Depends(get_db),
 ):
     """
     Process incoming stimuli (messages) to an agent.
-    
+
     Records the message in the database and updates agent activity.
     """
     # Validate and normalize agent_id
@@ -144,11 +168,14 @@ async def process_stimuli(
     agent = await db.get_agent_state(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-    
-    # Record stimuli
+
+    # Sanitize message content to prevent XSS/injection
+    sanitized_message = sanitize_message_content(request.message)
+
+    # Record stimuli with sanitized content
     stimuli = StimuliRecord(
         agent_id=agent_id,
-        content=request.message,
+        content=sanitized_message,
         source=request.source,
     )
     message_id = await db.record_stimuli(stimuli)
@@ -168,13 +195,13 @@ async def process_stimuli(
 
 @router.get("/{agent_id}/state", response_model=StateResponse)
 async def get_agent_state(
-    agent_id: str = Path(..., min_length=1, max_length=50),
+    agent_id: str = Path(..., min_length=1, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$"),
     db: DatabaseClient = Depends(get_db),
     graph: GraphClient = Depends(get_graph_db),
 ):
     """
     Get the current state of an agent.
-    
+
     Returns mood, last activity, pending tasks, and queued responses.
     """
     # Validate and normalize agent_id
@@ -204,14 +231,14 @@ async def get_agent_state(
 
 @router.get("/{agent_id}/memories", response_model=MemoryResponse)
 async def get_agent_memories(
-    agent_id: str = Path(..., min_length=1, max_length=50),
+    agent_id: str = Path(..., min_length=1, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$"),
     query: str = Query(default="", max_length=1000),
     limit: int = Query(default=10, ge=1, le=100),
     db: DatabaseClient = Depends(get_db),
 ):
     """
     Retrieve context memories for an agent.
-    
+
     Applies Valence Stripping to ensure agent-specific memory isolation.
     Foreign memories have subjective_voice and emotional_valence stripped.
     """
@@ -261,13 +288,13 @@ async def get_agent_memories(
 
 @router.post("/{agent_id}/sync", response_model=SyncResponse)
 async def trigger_spirit_sync(
-    agent_id: str = Path(..., min_length=1, max_length=50),
-    request: SyncRequest,
+    agent_id: str = Path(..., min_length=1, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$"),
+    request: SyncRequest = None,
     db: DatabaseClient = Depends(get_db),
 ):
     """
     Manually trigger a Spirit Sync for an agent body.
-    
+
     Allows an agent to manifest the DNA/Identity of another spirit.
     """
     # Validate and normalize agent_id
@@ -303,14 +330,14 @@ async def trigger_spirit_sync(
 
 @router.post("/{agent_id}/cycle", response_model=CycleResponse)
 async def trigger_heartbeat_cycle(
-    agent_id: str = Path(..., min_length=1, max_length=50),
+    agent_id: str = Path(..., min_length=1, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$"),
     request: CycleRequest = CycleRequest(),
     db: DatabaseClient = Depends(get_db),
     graph: GraphClient = Depends(get_graph_db),
 ):
     """
     Manually trigger a heartbeat cycle for an agent.
-    
+
     This simulates what happens during autonomous background operation.
     """
     # Validate and normalize agent_id

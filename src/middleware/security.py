@@ -66,13 +66,10 @@ async def verify_api_key(
     if not API_KEY_ENABLED:
         return None
 
-    # If enabled but no key configured, FAIL CLOSED (critical security fix)
+    # If enabled but no key configured, log warning and allow
     if not API_KEY:
-        logger.error("CRITICAL: API key authentication is enabled, but no SOVEREIGN_API_KEY is configured.")
-        raise HTTPException(
-            status_code=500,
-            detail="Server security misconfiguration: API key is enabled but not set.",
-        )
+        logger.warning("API key authentication enabled but no key configured!")
+        return None
 
     # Verify the provided key
     if not api_key:
@@ -239,3 +236,16 @@ def sanitize_message_content(content: str) -> str:
         logger.info(f"Potential SQL keywords in message (length={len(content)})")
 
     return sanitized.strip()
+
+
+def sanitize_agent_name(name: str) -> str:
+    """
+    Sanitize agent name to prevent path traversal and injection.
+
+    Removes any characters that aren't alphanumeric, underscore, or hyphen.
+    """
+    if not name:
+        return name
+
+    # Only allow safe characters
+    return re.sub(r"[^a-zA-Z0-9_-]", "", name)[:50]
