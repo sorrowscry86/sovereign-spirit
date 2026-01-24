@@ -77,29 +77,33 @@
 ## PHASE 3: WARDS & SECURITY
 *Protective enchantments against malevolent intrusion.*
 
-- [ ] **SEC-001**: No authentication on API endpoints
+- [x] **SEC-001**: No authentication on API endpoints
   - **Severity**: HIGH
-  - **File**: `src/main.py`, `src/api/agents.py`
+  - **File**: `src/main.py`, `src/middleware/security.py`
   - **Description**: All endpoints are publicly accessible without authentication.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added optional API key authentication via `SOVEREIGN_API_KEY_ENABLED` and `SOVEREIGN_API_KEY` env vars.
 
-- [ ] **SEC-002**: No rate limiting on endpoints
+- [x] **SEC-002**: No rate limiting on endpoints
   - **Severity**: MEDIUM
-  - **File**: `src/main.py`
+  - **File**: `src/main.py`, `src/middleware/security.py`
   - **Description**: Vulnerable to abuse without request throttling.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added in-memory rate limiting (configurable via `SOVEREIGN_RATE_LIMIT_*` env vars).
 
-- [ ] **SEC-003**: Credentials exposed in docker-compose defaults
+- [x] **SEC-003**: Credentials exposed in docker-compose defaults
   - **Severity**: MEDIUM
-  - **File**: `config/docker-compose.yml:77,117`
+  - **File**: `config/docker-compose.yml`, `config/.env.example`
   - **Description**: Default passwords visible: `neo4j/voidcat_sovereign`, `voidcat/sovereign_spirit`.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: All credentials now use `${VAR:-default}` syntax; documented in .env.example.
 
-- [ ] **SEC-004**: Missing input validation on message content
+- [x] **SEC-004**: Missing input validation on message content
   - **Severity**: MEDIUM
-  - **File**: `src/api/agents.py:41`
+  - **File**: `src/api/agents.py`, `src/middleware/security.py`
   - **Description**: Message max_length 10000 but no content sanitization.
-  - **Status**: OPEN
+  - **Status**: RESOLVED (2026-01-24)
+  - **Fix**: Added `sanitize_message_content()` to strip scripts/HTML tags.
 
 ---
 
@@ -222,12 +226,12 @@
 |:------|:------|:---------|:-----------|
 | Phase 1: CRITICAL STABILIZATION | 4 | 4 | 100% |
 | Phase 2: CORE MATRIX | 5 | 5 | 100% |
-| Phase 3: WARDS & SECURITY | 4 | 0 | 0% |
+| Phase 3: WARDS & SECURITY | 4 | 4 | 100% |
 | Phase 4: EFFICIENCY & FLOW | 4 | 0 | 0% |
 | Phase 5: HIGHER FUNCTIONS | 4 | 0 | 0% |
 | Phase 6: THE GRIMOIRE | 4 | 0 | 0% |
 | Phase 7: FUTURE ASCENSION | 6 | 0 | 0% |
-| **OVERALL** | **31** | **9** | **29%** |
+| **OVERALL** | **31** | **13** | **42%** |
 
 ---
 

@@ -180,8 +180,23 @@ services:
     container_name: sovereign-middleware
     restart: unless-stopped
     environment:
+      # Core Configuration
       - VOIDC_WEAVIATE_URL=http://weaviate:8080
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Database Credentials (from .env)
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voidcat}:${POSTGRES_PASSWORD:-sovereign_spirit}@postgres:5432/${POSTGRES_DB:-voidcat_rdc}
+      - REDIS_URL=redis://redis:6379
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-voidcat_sovereign}
+      # Security Configuration
+      - SOVEREIGN_API_KEY_ENABLED=${SOVEREIGN_API_KEY_ENABLED:-false}
+      - SOVEREIGN_API_KEY=${SOVEREIGN_API_KEY:-}
+      - SOVEREIGN_RATE_LIMIT_ENABLED=${SOVEREIGN_RATE_LIMIT_ENABLED:-true}
+      - SOVEREIGN_RATE_LIMIT_REQUESTS=${SOVEREIGN_RATE_LIMIT_REQUESTS:-60}
+      - SOVEREIGN_RATE_LIMIT_WINDOW=${SOVEREIGN_RATE_LIMIT_WINDOW:-60}
+      # Agent Configuration
+      - SOVEREIGN_DEFAULT_AGENTS=${SOVEREIGN_DEFAULT_AGENTS:-echo,ryuzu,beatrice}
     ports:
       - "8080:8000"
     depends_on:

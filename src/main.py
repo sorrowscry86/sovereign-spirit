@@ -21,6 +21,7 @@ import httpx
 from fastapi import FastAPI, Request, Header, HTTPException
 
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
+from src.middleware.security import verify_api_key, check_rate_limit
 from src.api.agents import router as agents_router
 from src.core.database import get_database
 from src.core.graph import get_graph
@@ -137,6 +138,30 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# =============================================================================
+# Security Middleware
+# =============================================================================
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """
+    Apply security checks to all incoming requests.
+
+    - Rate limiting
+    - API key verification (if enabled)
+    """
+    # Check rate limit first
+    await check_rate_limit(request)
+
+    # Verify API key (if enabled)
+    await verify_api_key(request)
+
+    # Proceed with request
+    response = await call_next(request)
+    return response
+
 
 # Mount routers
 app.include_router(agents_router)
