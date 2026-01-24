@@ -1,0 +1,25 @@
+# version: '3.8' (Obsolete)
+
+services:
+  # === ECHO'S DOMAIN: COGNITIVE MIDDLEWARE ===
+  middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sovereign-middleware
+    restart: unless-stopped
+    environment:
+      - VOIDC_WEAVIATE_URL=http://weaviate:8080
+      - LOG_LEVEL=INFO
+    ports:
+      - "8080:8000"
+    networks:
+      - voidcat-network
+    depends_on:
+      weaviate:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M

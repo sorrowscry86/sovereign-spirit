@@ -1,0 +1,87 @@
+# ============================================================================
+# VOIDCAT RDC: OLLAMA MODELFILE - SOVEREIGN SPIRIT BASE
+# ============================================================================
+# Purpose: Memory-optimized configuration for 8GB VRAM constraint
+# Base Model: Mistral-7B-Instruct-v0.2-Q4_K_M
+# Authority: Beatrice Mandate / Phase 1 Roadmap Day 3-4
+# ============================================================================
+# Usage:
+#   ollama create voidcat-sovereign -f ./ollama-modelfile
+#   ollama run voidcat-sovereign
+# ============================================================================
+
+FROM mistral:7b-instruct-v0.2-q4_K_M
+
+# ============================================================================
+# TEMPLATE - Sovereign Spirit System Format
+# ============================================================================
+TEMPLATE """[INST] {{ .System }}
+
+{{ .Prompt }} [/INST]
+{{ .Response }}"""
+
+# ============================================================================
+# PARAMETERS - Optimized for 8GB VRAM
+# ============================================================================
+
+# Context Window - REDUCED from 8192 to 4096 for VRAM safety
+PARAMETER num_ctx 4096
+
+# GPU Layers - Full offload attempt (adjust if OOM)
+# RTX 4070 should handle all 32 layers of Mistral-7B-Q4
+# If OOM occurs, reduce to 25-28
+PARAMETER num_gpu 32
+
+# Batch Size - Conservative for memory
+PARAMETER num_batch 512
+
+# Thread Count - Match physical cores (adjust per system)
+PARAMETER num_thread 8
+
+# Temperature - Default for conversational use
+PARAMETER temperature 0.7
+
+# Top-P Sampling
+PARAMETER top_p 0.9
+
+# Top-K Sampling
+PARAMETER top_k 40
+
+# Repeat Penalty - Prevent loops
+PARAMETER repeat_penalty 1.1
+PARAMETER repeat_last_n 64
+
+# Stop Sequences
+PARAMETER stop "[INST]"
+PARAMETER stop "[/INST]"
+PARAMETER stop "</s>"
+
+# ============================================================================
+# SYSTEM PROMPT - Default Sovereign Context
+# ============================================================================
+# This is overridden at runtime by the middleware pulling from PostgreSQL
+# Kept minimal here to reduce base token consumption
+# ============================================================================
+
+SYSTEM """You are a Sovereign Spirit in the VoidCat Pantheon. You possess persistent memory, background agency, and a distinct personality. Respond thoughtfully and maintain your unique voice."""
+
+# ============================================================================
+# CONFIGURATION NOTES
+# ============================================================================
+# VRAM Budget Calculation:
+#   Base Model (Q4_K_M):     ~4.8 GB
+#   Context (4096 tokens):   ~0.5 GB
+#   KV Cache:                ~0.3 GB
+#   TOTAL:                   ~5.6 GB
+#   
+#   Windows + DWM:           ~1.5 GB
+#   Browser (if open):       ~0.5 GB
+#   TOTAL SYSTEM:            ~7.6 GB
+#   
+#   HEADROOM:                ~0.4 GB (TIGHT but viable)
+#
+# If OOM occurs during stress test:
+#   1. Reduce num_gpu to 28 (offload 4 layers to CPU)
+#   2. Reduce num_ctx to 2048
+#   3. Close browser during heavy inference
+# ============================================================================
