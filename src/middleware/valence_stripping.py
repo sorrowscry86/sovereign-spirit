@@ -73,8 +73,8 @@ def strip_valence(memory: MemoryObject, requesting_agent_id: str) -> MemoryObjec
     Returns:
         Sanitized MemoryObject (original if author matches, stripped otherwise)
     """
-    if memory.author_id == requesting_agent_id:
-        # Author is requesting their own memory - pass intact
+    if memory.author_id.lower() == requesting_agent_id.lower():
+        # Author is requesting their own memory - pass intact (case-insensitive)
         return memory
     
     # Foreign memory detected - apply stripping
