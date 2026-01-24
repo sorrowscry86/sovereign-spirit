@@ -18,11 +18,11 @@ We will prioritize System Stability and Memory Efficiency over raw inference spe
 * **The Body (RAM/CPU):** The heavy lifting of background autonomy ("Heartbeat") and vector processing ("Memory") will be offloaded to system RAM.  
 * **The Trade-off:** We accept a 20-30% latency penalty in background processing to ensure the foreground chat interface (SillyTavern) remains responsive and crash-free.
 
-## **WEEK 1: THE FOUNDATION (INFRASTRUCTURE DEPLOYMENT)**
+## **WEEK 1: THE FOUNDATION (INFRASTRUCTURE DEPLOYMENT) — [COMPLETE]**
 
 **Objective:** Deploy the "Organs" (Databases) without causing a system-wide resource collapse.
 
-### **Day 1-2: The Docker Stack Configuration**
+### **Day 1-2: The Docker Stack Configuration — [COMPLETE]**
 
 Architectural Rationale:  
 We require a containerized environment to keep the "Sovereign" components isolated from the host Windows OS. This prevents dependency conflicts and allows for easy "brain transplants" to new hardware in the future.
@@ -48,7 +48,7 @@ We require a containerized environment to keep the "Sovereign" components isolat
   * Verify all containers are "Healthy" via docker ps.  
   * Perform a "Ping Test": Ensure the Node.js script can write a key to Redis and read a node from Neo4j.
 
-### **Day 3-4: The 8GB VRAM Calibration (Critical)**
+### **Day 3-4: The 8GB VRAM Calibration (Critical) — [COMPLETE]**
 
 The Constraint Analysis:  
 A generic Mistral-7B-Instruct-v0.2 (Q4\_K\_M) model requires approximately 4.8GB to 5.2GB of VRAM to load fully.
@@ -73,7 +73,7 @@ A generic Mistral-7B-Instruct-v0.2 (Q4\_K\_M) model requires approximately 4.8GB
   * *Mitigation:* Use a smaller context window (4096 tokens instead of 8192\) to keep more layers on the GPU.  
 * **Deliverable:** A stable Ollama configuration file (config.json or env vars) that persists across reboots and guarantees no OOM crashes during standard desktop usage.
 
-### **Day 5: The "Nervous System" (Filesystem Watchers)**
+### **Day 5: The "Nervous System" (Filesystem Watchers) — [COMPLETE]**
 
 **Objective:** Establish the Phase 1 communication bridge before the Redis integration is fully coded.
 
@@ -84,11 +84,11 @@ A generic Mistral-7B-Instruct-v0.2 (Q4\_K\_M) model requires approximately 4.8GB
   * **File Locking:** Implement a robust "check-lock-read-move" logic. The script must ensure a file is fully written (filesize stable) before attempting to read it, preventing corruption from race conditions.  
   * **Error Handling:** If a message is malformed (missing JSON frontmatter), move it to a quarantine folder and log an error, rather than crashing the listener.
 
-## **WEEK 2: THE HEARTBEAT (AGENCY & AUTONOMY)**
+## **WEEK 2: THE HEARTBEAT (AGENCY & AUTONOMY) — [IN PROGRESS]**
 
 **Objective:** Give the system a pulse—the ability to act without being spoken to.
 
-### **Day 1-3: The Pulse Script Implementation**
+### **Day 1-3: The Pulse Script Implementation — [COMPLETE]**
 
 Concept:  
 The "Heartbeat" is the subconscious loop. It breaks the "Stateless Oracle" curse where the AI only exists when a prompt is sent.
