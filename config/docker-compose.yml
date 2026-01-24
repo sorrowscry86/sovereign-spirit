@@ -1,0 +1,244 @@
+# ============================================================================
+# VOIDCAT RDC: SOVEREIGN STACK - DOCKER COMPOSE CONFIGURATION
+# ============================================================================
+# Version: 1.0.0
+# Target: RTX 4070 (8GB VRAM) - Memory Optimized
+# Authority: Beatrice Mandate / Phase 1 Roadmap
+# ============================================================================
+
+# version: '3.8' (Obsolete)
+
+services:
+  # ==========================================================================
+  # WEAVIATE - Vector Memory Store (Episodic Memory)
+  # ==========================================================================
+  # Role: Stores episodic memories as vectors for semantic search
+  # Constraint: STRICT 2GB limit to prevent RAM exhaustion
+  # ==========================================================================
+  weaviate:
+    image: semitechnologies/weaviate:1.27.0
+    container_name: voidcat-weaviate
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+      - "50051:50051"  # gRPC
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'text2vec-transformers'
+      ENABLE_MODULES: 'text2vec-transformers'
+      TRANSFORMERS_INFERENCE_API: 'http://t2v-transformers:8080'
+      CLUSTER_HOSTNAME: 'node1'
+
+      LIMIT_RESOURCES: 'true'
+      GOMAXPROCS: '2'  # Limit CPU threads
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    networks:
+      - voidcat-network
+
+  # --- Semantic Inference Sidecar ---
+  t2v-transformers:
+    image: semitechnologies/transformers-inference:sentence-transformers-multi-qa-MiniLM-L6-cos-v1
+    container_name: voidcat-t2v-transformers
+    environment:
+      ENABLE_CUDA: '0' # Run on CPU to save VRAM for LLMs
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    networks:
+      - voidcat-network
+
+  # ==========================================================================
+  # NEO4J - Knowledge Graph (Temporal Causality)
+  # ==========================================================================
+
+  # Role: Tracks relationships and causal chains between entities
+  # Constraint: Community Edition, 1GB max heap
+  # ==========================================================================
+  neo4j:
+    image: neo4j:5.15.0-community
+    container_name: voidcat-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    environment:
+      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/voidcat_sovereign}
+      NEO4J_PLUGINS: '["apoc"]'
+      # Memory Configuration - CRITICAL for 8GB VRAM constraint
+      NEO4J_dbms_memory_heap_initial__size: '512m'
+      NEO4J_dbms_memory_heap_max__size: '1G'
+      NEO4J_dbms_memory_pagecache_size: '256m'
+      NEO4J_dbms_memory_transaction_total_max: '256m'
+      # Performance tuning
+      NEO4J_dbms_transaction_timeout: '30s'
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    deploy:
+      resources:
+        limits:
+          memory: 1536M  # 1.5GB total container limit
+        reservations:
+          memory: 768M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7474"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - voidcat-network
+
+  # ==========================================================================
+  # POSTGRESQL 15 - State Engine (Soul Persistence)
+  # ==========================================================================
+  # Role: Stores Agent States, Personality Data, Structured Logs
+  # Extension: pgvector for hybrid search operations
+  # ==========================================================================
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: voidcat-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voidcat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sovereign_spirit}
+      POSTGRES_DB: ${POSTGRES_DB:-voidcat_rdc}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voidcat}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - voidcat-network
+
+  # ==========================================================================
+  # REDIS - Nervous System (Heartbeat Pub/Sub)
+  # ==========================================================================
+  # Role: Handles Heartbeat messaging, event caching, inter-agent signals
+  # Constraint: Alpine image for minimal footprint (<50MB RAM)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: voidcat-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 48mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 32M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - voidcat-network
+
+  # ==========================================================================
+  # SOVEREIGN MIDDLEWARE - Cognitive Bridge (Valence Stripping)
+  # ==========================================================================
+  # Role: FastAPI service intercepting queries, applying Valence Stripping
+  # Authority: Echo (E-01) / Beatrice Mandate
+  # ==========================================================================
+  middleware:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: sovereign-middleware
+    restart: unless-stopped
+    environment:
+      - VOIDC_WEAVIATE_URL=http://weaviate:8080
+      - LOG_LEVEL=INFO
+    ports:
+      - "8080:8000"
+    depends_on:
+      weaviate:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - voidcat-network
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+networks:
+  voidcat-network:
+    name: voidcat-sovereign-network
+    driver: bridge
+
+# ============================================================================
+# VOLUMES - Persistent Data Storage
+# ============================================================================
+volumes:
+  weaviate_data:
+    name: voidcat-weaviate-data
+  neo4j_data:
+    name: voidcat-neo4j-data
+  neo4j_logs:
+    name: voidcat-neo4j-logs
+  postgres_data:
+    name: voidcat-postgres-data
+  redis_data:
+    name: voidcat-redis-data
+
+# ============================================================================
+# RESOURCE SUMMARY (8GB VRAM / 16GB RAM Target)
+# ============================================================================
+# Service       | Memory Limit | Memory Reserved | Port(s)
+# --------------|--------------|-----------------|----------------
+# Weaviate      | 2GB          | 512MB           | 8080, 50051
+# Neo4j         | 1.5GB        | 768MB           | 7474, 7687
+# PostgreSQL    | 512MB        | 256MB           | 5432
+# Redis         | 64MB         | 32MB            | 6379
+# --------------|--------------|-----------------|----------------
+# TOTAL         | ~4.1GB       | ~1.6GB          |
+# ============================================================================
+# Remaining for Ollama + OS: ~12GB RAM (adequate for layer offloading)
+# ============================================================================
