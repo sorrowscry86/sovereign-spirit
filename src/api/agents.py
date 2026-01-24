@@ -128,7 +128,7 @@ async def get_graph_db() -> GraphClient:
 
 @router.post("/{agent_id}/stimuli", response_model=StimuliResponse)
 async def process_stimuli(
-    agent_id: str,
+    agent_id: str = Path(..., min_length=1, max_length=50),
     request: StimuliRequest,
     db: DatabaseClient = Depends(get_db),
 ):
@@ -137,6 +137,9 @@ async def process_stimuli(
     
     Records the message in the database and updates agent activity.
     """
+    # Validate and normalize agent_id
+    agent_id = validate_agent_id(agent_id)
+
     # Verify agent exists
     agent = await db.get_agent_state(agent_id)
     if not agent:
@@ -165,7 +168,7 @@ async def process_stimuli(
 
 @router.get("/{agent_id}/state", response_model=StateResponse)
 async def get_agent_state(
-    agent_id: str,
+    agent_id: str = Path(..., min_length=1, max_length=50),
     db: DatabaseClient = Depends(get_db),
     graph: GraphClient = Depends(get_graph_db),
 ):
@@ -174,6 +177,9 @@ async def get_agent_state(
     
     Returns mood, last activity, pending tasks, and queued responses.
     """
+    # Validate and normalize agent_id
+    agent_id = validate_agent_id(agent_id)
+
     # Get agent state from PostgreSQL
     agent = await db.get_agent_state(agent_id)
     if not agent:
@@ -198,7 +204,7 @@ async def get_agent_state(
 
 @router.get("/{agent_id}/memories", response_model=MemoryResponse)
 async def get_agent_memories(
-    agent_id: str,
+    agent_id: str = Path(..., min_length=1, max_length=50),
     query: str = Query(default="", max_length=1000),
     limit: int = Query(default=10, ge=1, le=100),
     db: DatabaseClient = Depends(get_db),
@@ -209,6 +215,9 @@ async def get_agent_memories(
     Applies Valence Stripping to ensure agent-specific memory isolation.
     Foreign memories have subjective_voice and emotional_valence stripped.
     """
+    # Validate and normalize agent_id
+    agent_id = validate_agent_id(agent_id)
+
     # Verify agent exists
     agent = await db.get_agent_state(agent_id)
     if not agent:
@@ -252,7 +261,7 @@ async def get_agent_memories(
 
 @router.post("/{agent_id}/sync", response_model=SyncResponse)
 async def trigger_spirit_sync(
-    agent_id: str,
+    agent_id: str = Path(..., min_length=1, max_length=50),
     request: SyncRequest,
     db: DatabaseClient = Depends(get_db),
 ):
@@ -261,6 +270,9 @@ async def trigger_spirit_sync(
     
     Allows an agent to manifest the DNA/Identity of another spirit.
     """
+    # Validate and normalize agent_id
+    agent_id = validate_agent_id(agent_id)
+
     manager = get_identity_manager(db)
     updated_state = await manager.sync_agent_identity(agent_id, request.target_spirit)
     
@@ -291,7 +303,7 @@ async def trigger_spirit_sync(
 
 @router.post("/{agent_id}/cycle", response_model=CycleResponse)
 async def trigger_heartbeat_cycle(
-    agent_id: str,
+    agent_id: str = Path(..., min_length=1, max_length=50),
     request: CycleRequest = CycleRequest(),
     db: DatabaseClient = Depends(get_db),
     graph: GraphClient = Depends(get_graph_db),
@@ -301,6 +313,9 @@ async def trigger_heartbeat_cycle(
     
     This simulates what happens during autonomous background operation.
     """
+    # Validate and normalize agent_id
+    agent_id = validate_agent_id(agent_id)
+
     # Verify agent exists
     agent = await db.get_agent_state(agent_id)
     if not agent:
