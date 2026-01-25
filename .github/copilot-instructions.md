@@ -39,7 +39,8 @@ src/
 ├── middleware/
 │   ├── valence_stripping.py  # CRITICAL: Strips emotional metadata from inter-agent memories
 │   └── security.py      # API key, rate limiting, input sanitization
-└── cli/                 # CLI commands for admin ops
+├── cli/                 # CLI commands for admin ops
+└── mcp/                 # Module Context Protocol (MCP) for autonomous tool execution
 ```
 
 ## CRITICAL PATTERNS & CONVENTIONS
@@ -69,6 +70,17 @@ From `src/middleware/security.py`:
 ### 4. Type Safety & Async First
 - **All Python code must be fully type-hinted** (PEP 484). Use `typing.Optional`, `typing.List`, etc.
 - Async throughout. Never use sync database calls in FastAPI handlers—use `async with` and `await`.
+
+### 5. Autonomous Tool Execution (Module Context Protocol)
+The Sovereign Spirit Core can:
+- Discover local MCP servers (Filesystem, Git, Search).
+- Connect to them via stdio/SSE.
+- Execute tools when the LLM emits a tool-call token via the Heartbeat loop.
+
+See `src/mcp/` for implementation details. Key components:
+- Configuration (`src/mcp/config.py`): Defines the registry of available MCP servers.
+- Client Manager (`src/mcp/client.py`): Manages MCP connections, aggregates tools, routes tool calls.
+- Integration (`src/inference/engine.py`): Injects available MCP tools into the system prompt and intercepts tool calls for execution.
 
 ## TYPICAL WORKFLOWS
 

@@ -667,3 +667,80 @@ These suggest admin workflows exist, but the actual command patterns and use cas
 
 ---
 
+_**User (2026-01-25 07:11Z)**_
+
+📜 ARCHITECTURE: THE HANDS OF THE GHOST (Backend MCP Host)
+Status: DRAFT SPECIFICATION Component: src/mcp/ Objective: Enable the Python Backend to execute tools autonomously via the Heartbeat.
+
+1. The Philosophy
+The Sovereign Spirit Core must be able to:
+
+Discover local MCP servers (Filesystem, Git, Search).
+
+Connect to them via stdio/SSE.
+
+Execute tools when the LLM emits a tool-call token.
+
+Do this silently in the background (via the Heartbeat loop).
+
+2. The Implementation Plan
+We will introduce a new module: src.mcp.
+
+A. The Configuration (src/mcp/config.py)
+Defines the registry of available MCP servers.
+
+Python
+
+MCP_SERVERS = {
+    "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/Wykeve/Projects"]
+    },
+    "git": {
+        "command": "docker",
+        "args": ["run", "-i", "--rm", "mcp/git"]
+    }
+}
+B. The Client Manager (src/mcp/client.py)
+Manages the lifecycle of MCP connections.
+
+connect(server_name): Spawns the subprocess.
+
+list_tools(): Aggregates tools from all connected servers.
+
+call_tool(name, args): Routes the execution to the correct server.
+
+C. The Integration (src/inference/engine.py)
+We must teach the LLM how to use these hands.
+
+System Prompt Injection: Appends the list of available MCP tools to the system prompt.
+
+Tool Loop: If the LLM output contains a tool call (e.g., <tool_code>), the engine intercepts it, executes it via mcp.client, and feeds the result back into the context window.
+
+3. The "Terminal Test" Upgrade
+Our Definition of Done changes slightly:
+
+Old Test: The agent remembers to water plants.
+
+New Test: The agent actually creates a file named plants_watered.log using the Filesystem MCP tool while you are away.
+
+---
+
+_**Agent (model copilot/auto)**_
+
+[object Object]
+
+---
+
+_**User (2026-01-25 07:11Z)**_
+
+@cloud Commit Changes and Delegate: "Delegate to cloud agent"
+
+---
+
+_**Agent (model copilot/auto)**_
+
+
+
+---
+
