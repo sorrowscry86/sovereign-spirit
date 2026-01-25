@@ -127,6 +127,8 @@ class LLMClient:
         self.providers = providers or DEFAULT_PROVIDERS.copy()
         self.active_provider = active_provider
         self.fallback_chain = fallback_chain or ["ollama_local", "lm_studio", "openrouter"]
+        self.inference_mode: str = "AUTO"
+        self.current_route: str = "LOCAL"
         self._client = httpx.AsyncClient(timeout=60.0)
     
     async def close(self) -> None:
@@ -186,15 +188,37 @@ class LLMClient:
         Returns:
             CompletionResponse with generated content
         """
-        providers_to_try = [provider_name] if provider_name else (
+        # Determine allowed provider types based on Bifrost Mode
+        allowed_types = []
+        if self.inference_mode == "LOCAL":
+            allowed_types = [ProviderType.OLLAMA, ProviderType.LM_STUDIO]
+        elif self.inference_mode == "CLOUD":
+            allowed_types = [ProviderType.OPENROUTER, ProviderType.OPENAI]
+        else: # AUTO
+            allowed_types = [t for t in ProviderType]
+
+        # Determine target provider
+        target = provider_name or self.active_provider
+        
+        # If AUTO, we might want to adjust based on current_route
+        # In this simplified phase, we follow the user override strictly if set
+        
+        providers_to_try = [target] if provider_name else (
             [self.active_provider] + [p for p in self.fallback_chain if p != self.active_provider]
             if use_fallback else [self.active_provider]
         )
         
+        # Filter by allowed Bifrost types
+        providers_to_try = [
+            p for p in providers_to_try 
+            if p in self.providers and self.providers[p].provider_type in allowed_types
+        ]
+        
+        if not providers_to_try:
+            raise RuntimeError(f"No providers available for inference mode: {self.inference_mode}")
+
         last_error = None
         for p_name in providers_to_try:
-            if p_name not in self.providers:
-                continue
             try:
                 return await self._complete_with_provider(
                     p_name, messages, max_tokens, temperature
@@ -202,8 +226,14 @@ class LLMClient:
             except Exception as e:
                 logger.warning(f"Provider {p_name} failed: {e}")
                 last_error = e
+                # Update current route if failure occurs (optional, but good for AUTO)
+                if self.inference_mode == "AUTO":
+                    # If local failed, we might want to mark current route as CLOUD
+                    # However, that logic belongs in a more complex router.py
+                    pass
         
-        raise RuntimeError(f"All providers failed. Last error: {last_error}")
+        raise RuntimeError(f"All providers failed for mode {self.inference_mode}. Last error: {last_error}")
+
     
     async def _complete_with_provider(
         self,

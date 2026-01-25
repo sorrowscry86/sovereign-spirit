@@ -168,6 +168,45 @@ class DatabaseClient:
     # =========================================================================
     # Agent State Operations
     # =========================================================================
+
+    async def list_agents(self) -> List[AgentState]:
+        """Retrieve all registered agents."""
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    SELECT 
+                        name,
+                        designation,
+                        current_mood,
+                        system_prompt_template,
+                        traits_json,
+                        behavior_modes,
+                        expertise_tags,
+                        last_active_at,
+                        created_at
+                    FROM agents
+                    ORDER BY name ASC
+                """)
+            )
+            rows = result.fetchall()
+            agents = []
+            import json
+            for row in rows:
+                traits = row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}")
+                modes = row[5] if isinstance(row[5], dict) else json.loads(row[5] or "{}")
+                agents.append(AgentState(
+                    agent_id=row[0].lower() if row[0] else "",
+                    name=row[0] or "",
+                    designation=row[1] or "Unknown",
+                    current_mood=row[2] or "Neutral",
+                    system_prompt=row[3] or "",
+                    traits=traits,
+                    behavior_modes=modes,
+                    expertise_tags=row[6] if row[6] else [],
+                    last_active=row[7],
+                    created_at=row[8],
+                ))
+            return agents
     
     async def get_agent_state(self, agent_id: str) -> Optional[AgentState]:
         """Retrieve the current state of an agent by name (used as ID)."""

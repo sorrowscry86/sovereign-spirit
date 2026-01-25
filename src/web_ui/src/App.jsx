@@ -2,6 +2,13 @@ import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Outlet } from 'react-router-dom';
 import { LayoutDashboard, MessageSquare, Settings, Activity } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
+import Memories from './pages/Memories';
+import Tasks from './pages/Tasks';
+import Sync from './pages/Sync';
+import Chat from './pages/Chat';
+import Config from './pages/Config';
+import NavigationTabs from './components/NavigationTabs';
+import { SocketProvider } from './context/SocketContext';
 
 // Inject Google Fonts
 const injectFonts = () => {
@@ -11,10 +18,6 @@ const injectFonts = () => {
   document.head.appendChild(link);
 };
 
-// Placeholder for future modules
-const Chat = () => <div className="glass-panel" style={{ margin: '2rem' }}><h2>Comm Link Offline</h2><p>Module under construction.</p></div>;
-const Config = () => <div className="glass-panel" style={{ margin: '2rem' }}><h2>Configuration</h2><p>Restricted Access.</p></div>;
-
 function AppShell() {
   useEffect(() => {
     injectFonts();
@@ -23,7 +26,7 @@ function AppShell() {
   return (
     <div style={{
       display: 'flex',
-      height: '100vh',
+      height: '100dvh',
       width: '100vw',
       backgroundColor: 'var(--void-bg)',
       color: 'var(--text-primary)',
@@ -86,7 +89,10 @@ function AppShell() {
           zIndex: 0
         }} />
 
-        <div style={{ flex: 1, overflowY: 'auto', position: 'relative', zIndex: 1 }}>
+        {/* Render NavigationTabs only on Dashboard/Memories/Tasks/Sync routes */}
+        <NavigationTabs />
+
+        <div style={{ flex: 1, overflowY: 'auto', position: 'relative', zIndex: 1, scrollbarWidth: 'thin' }}>
           <Outlet />
         </div>
       </main>
@@ -117,15 +123,20 @@ const NavItem = ({ to, icon, title }) => (
 
 function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/chat" element={<Chat />} />
-          <Route path="/settings" element={<Config />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <SocketProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/memories" element={<Memories />} />
+            <Route path="/tasks" element={<Tasks />} />
+            <Route path="/sync" element={<Sync />} />
+            <Route path="/chat" element={<Chat />} />
+            <Route path="/settings" element={<Config />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </SocketProvider>
   );
 }
 

@@ -6,6 +6,7 @@ Implementation of the Spirit Sync Protocol (VSSP).
 """
 
 import logging
+import json
 from typing import Optional, Dict, Any
 
 from src.core.database import DatabaseClient, AgentState
@@ -60,28 +61,32 @@ class IdentityManager:
         # 4. Apply the sync to the agent body in the database
         # Note: In a real 'Body-Soul' decouple, we update the active state of the agent_id.
         # For now, we update the system_prompt of the agent_id to match the spirit's DNA.
-        async with self.db.session() as session:
-            from sqlalchemy import text
-            await session.execute(
-                text("""
-                    UPDATE agents 
-                    SET designation = :designation,
-                        system_prompt_template = :prompt,
-                        traits_json = :traits,
-                        behavior_modes = :modes,
-                        expertise_tags = :expertise,
-                        current_mood = 'Synchronized'
-                    WHERE LOWER(name) = LOWER(:agent_id)
-                """),
-                {
-                    "agent_id": agent_id,
-                    "designation": spirit_dna.designation,
-                    "prompt": specialized_prompt,
-                    "traits": spirit_dna.traits,  # This is already a dict
-                    "modes": spirit_dna.behavior_modes,
-                    "expertise": spirit_dna.expertise_tags
-                }
-            )
+        try:
+            async with self.db.session() as session:
+                from sqlalchemy import text
+                await session.execute(
+                    text("""
+                        UPDATE agents 
+                        SET designation = :designation,
+                            system_prompt_template = :prompt,
+                            traits_json = :traits,
+                            behavior_modes = :modes,
+                            expertise_tags = :expertise,
+                            current_mood = 'Synchronized'
+                        WHERE LOWER(name) = LOWER(:agent_id)
+                    """),
+                    {
+                        "agent_id": agent_id,
+                        "designation": spirit_dna.designation,
+                        "prompt": specialized_prompt,
+                        "traits": json.dumps(spirit_dna.traits),
+                        "modes": json.dumps(spirit_dna.behavior_modes),
+                        "expertise": spirit_dna.expertise_tags  # Arrays are usually handled by driver, or cast to json
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Spirit Sync DB Update Failed for {agent_id}: {e}")
+            raise e  # Propagate to API for HTTP 500
             
         logger.info(f"Spirit Sync Complete: {agent_id} is now manifesting {target_spirit_name}.")
         return await self.db.get_agent_state(agent_id)

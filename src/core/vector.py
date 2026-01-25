@@ -107,6 +107,7 @@ class VectorClient:
             ts = props.get("timestamp") or props.get("created_at") or datetime.now().isoformat()
 
             memories.append({
+                "memory_id": str(obj.uuid),
                 "author_id": props.get("author_id"),
                 "content": props.get("content"),
                 "subjective_voice": props.get("subjective_voice"),

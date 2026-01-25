@@ -43,8 +43,8 @@ Sovereign Spirit/
 
 | Layer | Tech | Port |
 |:------|:-----|:-----|
-| Frontend | SillyTavern | 8000 |
-| Orchestration | LangGraph | — |
+| Middleware | FastAPI | 8000 |
+| Dashboard | React / Vite | 5173 |
 | Vector DB | Weaviate | 8090 |
 | Graph DB | Neo4j | 7687 |
 | State DB | PostgreSQL 15 | 5432 |

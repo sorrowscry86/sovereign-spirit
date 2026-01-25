@@ -2,19 +2,59 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Wifi, Database, Brain, Zap, Clock } from 'lucide-react';
 
-const WEBSOCKET_URL = "ws://localhost:8000/ws";
+import { useSocket } from '../context/SocketContext';
+import DiagnosticPanel from '../components/DiagnosticPanel';
 
 export default function Dashboard() {
-    const [socketStatus, setSocketStatus] = useState('disconnected');
-    const [pulseStream, setPulseStream] = useState([]);
-    const [agents, setAgents] = useState({
-        echo: { status: 'SLEEP', designation: 'The Vessel', lastPulse: null, syncStatus: 'Normal' },
-        beatrice: { status: 'SLEEP', designation: 'The Librarian', lastPulse: null, syncStatus: 'Normal' },
-        ryuzu: { status: 'SLEEP', designation: 'The Sculptor', lastPulse: null, syncStatus: 'Normal' }
-    });
+    // Consume the global nervous system
+    const { socketStatus, lastMessage } = useSocket();
 
-    const wsRef = useRef(null);
+    // Local State for UI Visualization
+    const [pulseStream, setPulseStream] = useState([]);
+    const [agents, setAgents] = useState({});
+    const [agentsLoading, setAgentsLoading] = useState(true);
+    const [agentsError, setAgentsError] = useState(null);
+    const [lastAgentFetch, setLastAgentFetch] = useState(null);
+
     const streamEndRef = useRef(null);
+
+    // Fetch agents from API on mount
+    useEffect(() => {
+        const fetchAgents = async () => {
+            try {
+                setAgentsLoading(true);
+                setAgentsError(null);
+                const res = await fetch('/agent/');
+                if (!res.ok) throw new Error(`Failed to fetch agents: ${res.status}`);
+                const agentList = await res.json();
+
+                // Transform to keyed object with default state
+                const agentMap = {};
+                agentList.forEach(agent => {
+                    agentMap[agent.agent_id] = {
+                        name: agent.name,
+                        designation: agent.designation,
+                        current_mood: agent.current_mood,
+                        status: 'SLEEP',
+                        lastPulse: null,
+                        syncStatus: 'Normal',
+                        flash: false
+                    };
+                });
+
+                setAgents(agentMap);
+                setLastAgentFetch(new Date());
+                console.log(`[Dashboard] Loaded ${agentList.length} agents from API`);
+            } catch (error) {
+                console.error('[Dashboard] Failed to fetch agents:', error);
+                setAgentsError(error.message);
+            } finally {
+                setAgentsLoading(false);
+            }
+        };
+
+        fetchAgents();
+    }, []);
 
     // Auto-scroll log
     useEffect(() => {
@@ -33,15 +73,18 @@ export default function Dashboard() {
         };
         setPulseStream(prev => [...prev.slice(-49), logEntry]);
 
-        // Update Agent State
-        setAgents(prev => ({
-            ...prev,
-            [data.agent_id]: {
-                ...prev[data.agent_id],
-                status: data.action,
-                lastPulse: Date.now()
-            }
-        }));
+        // Update Agent State (only if agent exists)
+        setAgents(prev => {
+            if (!prev[data.agent_id]) return prev;
+            return {
+                ...prev,
+                [data.agent_id]: {
+                    ...prev[data.agent_id],
+                    status: data.action,
+                    lastPulse: Date.now()
+                }
+            };
+        });
     };
 
     const handleSyncUpdate = (data) => {
@@ -55,55 +98,54 @@ export default function Dashboard() {
         };
         setPulseStream(prev => [...prev.slice(-49), logEntry]);
 
-        setAgents(prev => ({
-            ...prev,
-            [data.agent_id]: {
-                ...prev[data.agent_id],
-                designation: data.designation,
-                syncStatus: 'Synchronized',
-                flash: true
-            }
-        }));
+        setAgents(prev => {
+            if (!prev[data.agent_id]) return prev;
+            return {
+                ...prev,
+                [data.agent_id]: {
+                    ...prev[data.agent_id],
+                    designation: data.designation,
+                    syncStatus: 'Synchronized',
+                    flash: true
+                }
+            };
+        });
 
         // Reset flash after animation
         setTimeout(() => {
-            setAgents(prev => ({
-                ...prev,
-                [data.agent_id]: { ...prev[data.agent_id], flash: false }
-            }));
+            setAgents(prev => {
+                if (!prev[data.agent_id]) return prev;
+                return {
+                    ...prev,
+                    [data.agent_id]: { ...prev[data.agent_id], flash: false }
+                };
+            });
         }, 800);
     };
 
-    // WebSocket Connection
+    // React to Incoming Nerve Impulses (Global Socket)
     useEffect(() => {
-        const connect = () => {
-            console.log("Connecting to Nervous System...");
-            const ws = new WebSocket(WEBSOCKET_URL);
+        if (!lastMessage) return;
 
-            ws.onopen = () => setSocketStatus('connected');
-            ws.onclose = () => {
-                setSocketStatus('disconnected');
-                setTimeout(connect, 3000); // Auto-reconnect
-            };
+        if (lastMessage.type === "HEARTBEAT") {
+            handleHeartbeat(lastMessage.data);
+        } else if (lastMessage.type === "SYNC_UPDATE") {
+            handleSyncUpdate(lastMessage.data);
+        }
+    }, [lastMessage]);
 
-            ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                if (msg.type === "HEARTBEAT") {
-                    handleHeartbeat(msg.data);
-                } else if (msg.type === "SYNC_UPDATE") {
-                    handleSyncUpdate(msg.data);
-                }
-            };
-
-            wsRef.current = ws;
+    // Helper: Get agent color based on ID
+    const getAgentColor = (agentId) => {
+        const colorMap = {
+            'echo': 'var(--neon-green)',
+            'beatrice': 'var(--neon-cyan)',
+            'ryuzu': 'var(--neon-purple)',
         };
-
-        connect();
-        return () => wsRef.current?.close();
-    }, []);
+        return colorMap[agentId] || 'var(--neon-cyan)'; // Default to cyan
+    };
 
     return (
-        <div style={{ padding: '2rem', height: '100%', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div style={{ padding: '4rem 2rem 2rem 2rem', height: '100%', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
             {/* HEADER HUD */}
             <div className="glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -118,6 +160,12 @@ export default function Dashboard() {
                         value={socketStatus}
                         color={socketStatus === 'connected' ? 'var(--neon-green)' : 'var(--neon-error)'}
                     />
+                    <HudMetric
+                        icon={<Clock size={16} />}
+                        label="Agents"
+                        value={lastAgentFetch ? lastAgentFetch.toLocaleTimeString() : 'Loading...'}
+                        color={agentsError ? 'var(--neon-error)' : 'var(--text-secondary)'}
+                    />
                 </div>
             </div>
 
@@ -125,12 +173,37 @@ export default function Dashboard() {
             <div style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-                gap: '24px'
+                gap: '24px',
+                minHeight: '240px'
             }}>
-                <AgentCard id="echo" name="Echo" data={agents.echo} baseColor="var(--neon-green)" />
-                <AgentCard id="beatrice" name="Beatrice" data={agents.beatrice} baseColor="var(--neon-cyan)" />
-                <AgentCard id="ryuzu" name="Ryuzu" data={agents.ryuzu} baseColor="var(--neon-purple)" />
+                {agentsLoading && (
+                    <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'var(--text-secondary)', padding: '40px' }}>
+                        Loading agents...
+                    </div>
+                )}
+                {agentsError && (
+                    <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'var(--neon-error)', padding: '40px' }}>
+                        ⚠️ Failed to load agents: {agentsError}
+                    </div>
+                )}
+                {!agentsLoading && !agentsError && Object.keys(agents).length === 0 && (
+                    <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'var(--text-dim)', padding: '40px' }}>
+                        No agents found
+                    </div>
+                )}
+                {!agentsLoading && !agentsError && Object.entries(agents).map(([agentId, agentData]) => (
+                    <AgentCard
+                        key={agentId}
+                        id={agentId}
+                        name={agentData.name}
+                        data={agentData}
+                        baseColor={getAgentColor(agentId)}
+                    />
+                ))}
             </div>
+
+            {/* DIAGNOSTIC PANEL */}
+            <DiagnosticPanel />
 
             {/* PULSE STREAM */}
             <div className="glass-panel" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>

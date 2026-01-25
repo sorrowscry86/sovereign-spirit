@@ -1,37 +1,11 @@
-fastapi==0.109.2
-uvicorn==0.27.1
-httpx==0.26.0
-pydantic==2.6.1
-python-dotenv==1.0.1
-
-# Testing
-pytest==7.4.3
-pytest-asyncio==0.23.1
-pytest-cov==4.1.0
-pytest-mock==3.12.0
-
-# Development & Quality
-mypy==1.7.1
-pylint==3.0.3
-black==23.12.1
-bandit==1.7.5
-
-# Database
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-asyncpg==0.29.0
-alembic==1.13.1
-
-# Graph DB
-neo4j==5.17.0
-
-# Vector DB
-weaviate-client==4.4.4
-
-# Redis & Caching
-redis==5.0.1
-
-# CLI Dashboard
-rich==13.7.0
-questionary==2.0.1
-pyyaml==6.0.1
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+sqlalchemy
+asyncpg
+httpx
+weaviate-client
+redis
+neo4j
+python-dotenv

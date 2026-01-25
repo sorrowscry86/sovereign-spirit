@@ -26,6 +26,7 @@ from src.core.database import (
     QueuedResponse,
 )
 from src.core.graph import GraphClient, get_graph, TaskNode
+from src.core.vector import VectorClient, get_vector_client
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
 from src.middleware.security import sanitize_message_content
 from src.core.identity.manager import get_identity_manager
@@ -146,9 +147,46 @@ async def get_graph_db() -> GraphClient:
     return graph
 
 
+async def get_vector_db() -> VectorClient:
+    """Dependency to get vector client."""
+    client = get_vector_client()
+    if not client._initialized:
+        await client.initialize()
+    return client
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
+
+
+class AgentListItem(BaseModel):
+    """Agent summary for list endpoint."""
+    agent_id: str
+    name: str
+    designation: str
+    current_mood: str
+
+
+@router.get("/", response_model=List[AgentListItem])
+async def list_agents(
+    db: DatabaseClient = Depends(get_db),
+):
+    """
+    List all registered agents.
+
+    Returns a summary of each agent including ID, name, designation, and mood.
+    """
+    agents = await db.list_agents()
+    return [
+        AgentListItem(
+            agent_id=a.agent_id,
+            name=a.name,
+            designation=a.designation,
+            current_mood=a.current_mood,
+        )
+        for a in agents
+    ]
 
 @router.post("/{agent_id}/stimuli", response_model=StimuliResponse)
 async def process_stimuli(
@@ -235,6 +273,7 @@ async def get_agent_memories(
     query: str = Query(default="", max_length=1000),
     limit: int = Query(default=10, ge=1, le=100),
     db: DatabaseClient = Depends(get_db),
+    vector: VectorClient = Depends(get_vector_db),
 ):
     """
     Retrieve context memories for an agent.
@@ -250,17 +289,19 @@ async def get_agent_memories(
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     
-    # TODO: Query Weaviate for vector memories
-    # For now, return a placeholder showing the valence stripping demo
+    # Query Weaviate for vector memories
+    results = await vector.search(query=query, agent_id=agent_id, limit=limit)
+    
     raw_memories = [
         MemoryObject(
-            memory_id="demo_001",
-            author_id="beatrice",
-            objective_fact="The user requested plant watering reminder.",
-            subjective_voice="I find this task delightfully simple.",
-            emotional_valence=0.7,
-            timestamp=datetime.utcnow().isoformat(),
-        ),
+            memory_id=m.get("memory_id", f"gen_{uuid.uuid4()}"),
+            author_id=m.get("author_id", "unknown"),
+            objective_fact=m.get("content", ""),
+            subjective_voice=m.get("subjective_voice", ""),
+            emotional_valence=float(m.get("emotional_valence", 0.0)),
+            timestamp=str(m.get("timestamp", datetime.utcnow().isoformat())),
+        )
+        for m in results
     ]
     
     # Apply valence stripping

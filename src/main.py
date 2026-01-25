@@ -19,10 +19,13 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
 from src.middleware.security import verify_api_key, check_rate_limit
 from src.api.agents import router as agents_router
+from src.api.graph import router as graph_router
+from src.api.config import router as config_router
 from src.core.database import get_database
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
@@ -137,6 +140,32 @@ app = FastAPI(
     description="Autonomous AI Agent Operating System",
     version="1.0.0",
     lifespan=lifespan,
+    openapi_url="/api/v1/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    contact={
+        "name": "VoidCat RDC",
+        "url": "https://github.com/sorrowscry86/sovereign-spirit",
+        "email": "SorrowsCry86@gmail.org",
+    },
+    license_info={
+        "name": "MIT",
+    },
+)
+
+# =============================================================================
+# CORS Configuration
+# =============================================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:8000",  # FastAPI server
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -190,6 +219,15 @@ async def health_check():
 
 from src.core.socket_manager import get_connection_manager
 from fastapi import WebSocket, WebSocketDisconnect
+
+# =============================================================================
+# Router Registration
+# =============================================================================
+
+app.include_router(agents_router, prefix="/agent")
+app.include_router(graph_router)
+app.include_router(config_router)
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
