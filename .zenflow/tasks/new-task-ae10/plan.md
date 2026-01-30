@@ -18,7 +18,8 @@ Do not make assumptions on important decisions — get clarification first.
 
 ## Workflow Steps
 
-### [ ] Step: Technical Specification
+### [x] Step: Technical Specification
+<!-- chat-id: 77b6cc15-a09f-47ea-9396-e6ba1febda9c -->
 
 Assess the task's difficulty, as underestimating it leads to poor outcomes.
 - easy: Straightforward implementation, trivial bug fix or feature
@@ -50,15 +51,43 @@ Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warra
 
 ---
 
-### [ ] Step: Implementation
+### [x] Step: Implement Memory Endpoint Integration
+Replace placeholder memory endpoint in src/api/agents.py with actual Weaviate GraphQL queries.
+- Review current placeholder code
+- Implement Weaviate query logic
+- Test endpoint returns real data
+- Run pytest on agent API tests
 
-Implement the task according to the technical specification and general engineering best practices.
+### [x] Step: Implement Frontend Chat Component
+Replace placeholder Chat component in src/web_ui/src/App.jsx with functional chat interface.
+- Review existing React structure
+- Implement chat UI with message display
+- Add WebSocket integration for real-time messages
+- Test component renders and connects
 
-1. Break the task into steps where possible.
-2. Implement the required changes in the codebase.
-3. Add and run relevant tests and linters.
-4. Perform basic manual verification if applicable.
-5. After completion, write a report to `{@artifacts_path}/report.md` describing:
-   - What was implemented
-   - How the solution was tested
-   - The biggest issues or challenges encountered
+### [x] Step: Implement Frontend Config Component
+Replace placeholder Config component in src/web_ui/src/App.jsx with functional configuration interface.
+- Design config UI for agent settings
+- Implement state management for config changes
+- Add API calls to save/load config
+- Test config persistence
+
+### [x] Step: Add WebSocket Reconnection Logic
+Implement auto-reconnection in src/web_ui/src/pages/Dashboard.jsx when WebSocket drops.
+- Add reconnection state management
+- Implement exponential backoff retry
+- Handle connection errors gracefully
+- Test reconnection on disconnect
+
+### [x] Step: Add Rollback to Spirit Sync
+Implement transaction rollback in src/core/identity/manager.py for failed sync operations.
+- Review current sync logic
+- Add database transaction wrapper
+- Implement rollback on partial failures
+- Test sync with failure scenarios
+
+### [x] Step: Final Verification and Report
+Run full test suite, lint, and type checks. Write implementation report.
+- Execute pytest, pylint, mypy
+- Manual verification of all features
+- Write report.md with implementation details

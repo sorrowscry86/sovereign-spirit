@@ -29,6 +29,7 @@ from src.core.graph import GraphClient, get_graph, TaskNode
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
 from src.middleware.security import sanitize_message_content
 from src.core.identity.manager import get_identity_manager
+from src.core.vector import get_vector_client
 
 logger = logging.getLogger("sovereign.api.agents")
 
@@ -250,18 +251,23 @@ async def get_agent_memories(
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     
-    # TODO: Query Weaviate for vector memories
-    # For now, return a placeholder showing the valence stripping demo
-    raw_memories = [
-        MemoryObject(
-            memory_id="demo_001",
-            author_id="beatrice",
-            objective_fact="The user requested plant watering reminder.",
-            subjective_voice="I find this task delightfully simple.",
-            emotional_valence=0.7,
-            timestamp=datetime.utcnow().isoformat(),
-        ),
-    ]
+    # Query Weaviate for vector memories
+    vector = get_vector_client()
+    if query:
+        raw_dicts = await vector.search(query, agent_id, limit)
+        raw_memories = [
+            MemoryObject(
+                memory_id=d["memory_id"],
+                author_id=d["author_id"],
+                objective_fact=d["content"],
+                subjective_voice=d["subjective_voice"],
+                emotional_valence=d["emotional_valence"],
+                timestamp=d["timestamp"],
+            )
+            for d in raw_dicts
+        ]
+    else:
+        raw_memories = []
     
     # Apply valence stripping
     stripped = process_memory_batch(raw_memories, agent_id)
