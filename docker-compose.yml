@@ -19,6 +19,8 @@ services:
       - postgres
       - neo4j
       - weaviate
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - sovereign_net
     restart: unless-stopped
