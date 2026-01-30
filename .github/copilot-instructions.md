@@ -75,7 +75,7 @@ From `src/middleware/security.py`:
 The Sovereign Spirit Core can:
 - Discover local MCP servers (Filesystem, Git, Search).
 - Connect to them via stdio/SSE.
-- Execute tools when the LLM emits a tool-call token via the Heartbeat loop.
+- Execute tools when the LLM emits a tool-call token.
 
 See `src/mcp/` for implementation details. Key components:
 - Configuration (`src/mcp/config.py`): Defines the registry of available MCP servers.
