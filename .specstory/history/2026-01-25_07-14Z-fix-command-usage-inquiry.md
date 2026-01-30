@@ -131,6 +131,7 @@ Enables agents to generate responses via cloud providers when local fails.
 
 ---
 
+<<<<<<< HEAD
 _**User (2026-01-25 07:16Z)**_
 
 yes
@@ -255,3 +256,5 @@ _**Agent (model copilot/auto)**_
 
 ---
 
+=======
+>>>>>>> main

@@ -2,21 +2,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Wifi, Database, Brain, Zap, Clock } from 'lucide-react';
 
-import { useSocket } from '../context/SocketContext';
 import DiagnosticPanel from '../components/DiagnosticPanel';
 
-export default function Dashboard() {
-    // Consume the global nervous system
-    const { socketStatus, lastMessage } = useSocket();
+const WEBSOCKET_URL = 'ws://localhost:8000/ws';
 
+export default function Dashboard() {
     // Local State for UI Visualization
     const [pulseStream, setPulseStream] = useState([]);
     const [agents, setAgents] = useState({});
     const [agentsLoading, setAgentsLoading] = useState(true);
     const [agentsError, setAgentsError] = useState(null);
     const [lastAgentFetch, setLastAgentFetch] = useState(null);
+    const [socketStatus, setSocketStatus] = useState('disconnected');
 
     const streamEndRef = useRef(null);
+    const wsRef = useRef(null);
+    const reconnectAttempts = useRef(0);
+    const maxReconnectDelay = 30000; // 30 seconds
+    const baseReconnectDelay = 1000; // 1 second
 
     // Fetch agents from API on mount
     useEffect(() => {
@@ -125,14 +128,58 @@ export default function Dashboard() {
 
     // React to Incoming Nerve Impulses (Global Socket)
     useEffect(() => {
-        if (!lastMessage) return;
+        const connect = () => {
+            console.log(`Connecting to Nervous System... (attempt ${reconnectAttempts.current + 1})`);
+            const ws = new WebSocket(WEBSOCKET_URL);
 
-        if (lastMessage.type === "HEARTBEAT") {
-            handleHeartbeat(lastMessage.data);
-        } else if (lastMessage.type === "SYNC_UPDATE") {
-            handleSyncUpdate(lastMessage.data);
-        }
-    }, [lastMessage]);
+            ws.onopen = () => {
+                setSocketStatus('connected');
+                reconnectAttempts.current = 0; // Reset on successful connection
+            };
+
+            ws.onclose = (event) => {
+                setSocketStatus('disconnected');
+                if (!event.wasClean) {
+                    // Only reconnect on abnormal closure
+                    reconnectAttempts.current += 1;
+                    const delay = Math.min(
+                        baseReconnectDelay * Math.pow(2, reconnectAttempts.current - 1),
+                        maxReconnectDelay
+                    );
+                    console.log(`Reconnecting in ${delay}ms...`);
+                    setTimeout(connect, delay);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                setSocketStatus('error');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === "HEARTBEAT") {
+                        handleHeartbeat(msg.data);
+                    } else if (msg.type === "SYNC_UPDATE") {
+                        handleSyncUpdate(msg.data);
+                    }
+                } catch (error) {
+                    console.error('Failed to parse WebSocket message:', error);
+                }
+            };
+
+            wsRef.current = ws;
+        };
+
+        connect();
+
+        return () => {
+            if (wsRef.current) {
+                wsRef.current.close();
+            }
+        };
+    }, []);
 
     // Helper: Get agent color based on ID
     const getAgentColor = (agentId) => {

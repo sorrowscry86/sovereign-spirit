@@ -1,176 +1,226 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Terminal, Cpu, MessageSquare } from 'lucide-react';
-import { useSocket } from '../context/SocketContext';
+import { Send, MessageSquare, User, Bot } from 'lucide-react';
+
+const API_BASE = "http://localhost:8000";
 
 export default function Chat() {
-    const { socketStatus, lastMessage } = useSocket();
-    const [messages, setMessages] = useState([]);
-    const [input, setInput] = useState('');
-    const [targetAgent, setTargetAgent] = useState('echo');
-    const [sending, setSending] = useState(false);
+    const [messages, setMessages] = useState([
+        {
+            id: 1,
+            sender: 'system',
+            content: 'Comm Link Established. Select an agent to begin communication.',
+            timestamp: new Date()
+        }
+    ]);
+    const [inputMessage, setInputMessage] = useState('');
+    const [selectedAgent, setSelectedAgent] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const messagesEndRef = useRef(null);
 
-    const scrollRef = useRef(null);
+    const agents = [
+        { id: 'echo', name: 'Echo', designation: 'The Vessel' },
+        { id: 'beatrice', name: 'Beatrice', designation: 'The Librarian' },
+        { id: 'ryuzu', name: 'Ryuzu', designation: 'The Sculptor' }
+    ];
 
-    // Auto-scroll
+    // Auto-scroll to bottom
     useEffect(() => {
-        scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Listen for echoes from the void
-    useEffect(() => {
-        if (lastMessage) {
-            // If the heartbeat contains a "thought", treat it as a system log/message
-            if (lastMessage.type === 'HEARTBEAT' && lastMessage.data.thought) {
-                addMessage({
-                    source: lastMessage.data.agent_id,
-                    content: `[${lastMessage.data.action}] ${lastMessage.data.thought}`,
-                    type: 'system',
-                    timestamp: new Date().toLocaleTimeString()
-                });
-            }
-        }
-    }, [lastMessage]);
+    const sendMessage = async () => {
+        if (!inputMessage.trim() || !selectedAgent) return;
 
-    const addMessage = (msg) => {
-        setMessages(prev => [...prev.slice(-99), { id: Date.now(), ...msg }]);
-    };
-
-    const handleSend = async (e) => {
-        e.preventDefault();
-        if (!input.trim()) return;
-
-        const payload = {
-            message: input,
-            source: "admin_ui"
+        const message = {
+            id: Date.now(),
+            sender: 'user',
+            content: inputMessage,
+            timestamp: new Date(),
+            agent: selectedAgent
         };
 
-        setSending(true);
+        setMessages(prev => [...prev, message]);
+        setInputMessage('');
+        setIsLoading(true);
+
         try {
-            // Log local user message
-            addMessage({
-                source: 'user',
-                content: input,
-                type: 'user',
-                timestamp: new Date().toLocaleTimeString()
-            });
-
-            // Fire the stimuli
-            const res = await fetch(`http://localhost:8000/agent/${targetAgent}/stimuli`, {
+            const response = await fetch(`${API_BASE}/agent/${selectedAgent}/stimuli`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    message: inputMessage,
+                    source: 'web_ui'
+                })
             });
 
-            if (!res.ok) throw new Error("Stimuli Rejected");
-
-            setInput('');
-        } catch (err) {
-            addMessage({
-                source: 'system',
-                content: `Error: ${err.message}`,
-                type: 'error',
-                timestamp: new Date().toLocaleTimeString()
-            });
+            if (response.ok) {
+                // Message sent successfully
+                // In a real implementation, responses would come via WebSocket or polling
+                setMessages(prev => [...prev, {
+                    id: Date.now() + 1,
+                    sender: 'system',
+                    content: `Message delivered to ${selectedAgent.toUpperCase()}. Awaiting response...`,
+                    timestamp: new Date()
+                }]);
+            } else {
+                throw new Error('Failed to send message');
+            }
+        } catch (error) {
+            setMessages(prev => [...prev, {
+                id: Date.now() + 1,
+                sender: 'system',
+                content: `Error: Failed to send message to ${selectedAgent.toUpperCase()}.`,
+                timestamp: new Date()
+            }]);
         } finally {
-            setSending(false);
+            setIsLoading(false);
+        }
+    };
+
+    const handleKeyPress = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
         }
     };
 
     return (
-        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '2rem', gap: '20px' }}>
-            {/* HEADER */}
-            <div className="glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h1 className="radiant-text" style={{ margin: 0, fontSize: '1.5rem' }}>DIRECT LINK REPOSITORY</h1>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Target:</span>
-                    <select
-                        value={targetAgent}
-                        onChange={(e) => setTargetAgent(e.target.value)}
-                        style={{
-                            background: 'rgba(0,0,0,0.5)',
-                            border: '1px solid var(--void-border)',
-                            color: 'var(--neon-cyan)',
-                            padding: '5px 10px',
-                            borderRadius: '5px',
-                            fontFamily: 'monospace'
-                        }}
-                    >
-                        <option value="echo">ECHO (The Vessel)</option>
-                        <option value="ryuzu">RYUZU (The Sculptor)</option>
-                        <option value="beatrice">BEATRICE (The Librarian)</option>
-                        <option value="sonmi">SONMI (The Arbiter)</option>
-                    </select>
+        <div style={{ padding: '2rem', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            {/* Header */}
+            <div className="glass-panel" style={{ marginBottom: '20px' }}>
+                <h1 className="radiant-text" style={{ margin: 0, fontSize: '1.5rem' }}>COMM LINK // DIRECT INTERFACE</h1>
+                <p style={{ margin: '8px 0 0 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                    Establish direct communication with Sovereign agents
+                </p>
+            </div>
+
+            {/* Agent Selector */}
+            <div className="glass-panel" style={{ marginBottom: '20px' }}>
+                <h3 style={{ margin: '0 0 12px 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                    SELECT AGENT
+                </h3>
+                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    {agents.map(agent => (
+                        <button
+                            key={agent.id}
+                            onClick={() => setSelectedAgent(agent.id)}
+                            style={{
+                                padding: '12px 16px',
+                                border: selectedAgent === agent.id ? '1px solid var(--neon-cyan)' : '1px solid var(--void-border)',
+                                backgroundColor: selectedAgent === agent.id ? 'rgba(0, 229, 255, 0.1)' : 'rgba(10, 15, 20, 0.5)',
+                                color: selectedAgent === agent.id ? 'var(--neon-cyan)' : 'var(--text-primary)',
+                                borderRadius: '8px',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s',
+                                fontSize: '0.9rem'
+                            }}
+                        >
+                            <div style={{ fontWeight: 'bold' }}>{agent.name}</div>
+                            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{agent.designation}</div>
+                        </button>
+                    ))}
                 </div>
             </div>
 
-            {/* CHAT WINDOW */}
-            <div className="glass-panel" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', padding: '20px' }}>
-                {messages.length === 0 && (
-                    <div style={{ textAlign: 'center', color: 'var(--text-dim)', marginTop: '20%' }}>
-                        <Terminal size={48} style={{ opacity: 0.2, marginBottom: '20px' }} />
-                        <p>No active neural pathways...</p>
-                    </div>
-                )}
+            {/* Messages Area */}
+            <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', marginBottom: '20px' }}>
+                <div style={{ padding: '16px', borderBottom: '1px solid var(--void-border)' }}>
+                    <h3 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                        COMMUNICATION LOG
+                    </h3>
+                </div>
 
-                {messages.map(msg => (
-                    <div key={msg.id} style={{
-                        alignSelf: msg.type === 'user' ? 'flex-end' : 'flex-start',
-                        maxWidth: '70%',
-                        backgroundColor: msg.type === 'user' ? 'rgba(0, 229, 255, 0.1)' : 'rgba(255, 255, 255, 0.05)',
-                        border: msg.type === 'user' ? '1px solid rgba(0, 229, 255, 0.3)' : '1px solid rgba(255, 255, 255, 0.1)',
-                        borderRadius: '12px',
-                        padding: '12px 16px',
-                        color: msg.type === 'error' ? 'var(--neon-error)' : 'var(--text-primary)'
-                    }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', minWidth: '120px' }}>
-                            <span style={{ fontWeight: 'bold', color: msg.type === 'user' ? 'var(--neon-cyan)' : 'var(--neon-purple)' }}>
-                                {msg.source.toUpperCase()}
-                            </span>
-                            <span>{msg.timestamp}</span>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+                    {messages.map(message => (
+                        <div key={message.id} style={{
+                            display: 'flex',
+                            marginBottom: '16px',
+                            alignItems: message.sender === 'user' ? 'flex-end' : 'flex-start'
+                        }}>
+                            <div style={{
+                                maxWidth: '70%',
+                                padding: '12px 16px',
+                                borderRadius: '12px',
+                                backgroundColor: message.sender === 'user'
+                                    ? 'var(--neon-cyan)'
+                                    : message.sender === 'system'
+                                        ? 'rgba(157, 80, 187, 0.2)'
+                                        : 'rgba(10, 15, 20, 0.8)',
+                                color: message.sender === 'user' ? 'rgba(10, 15, 20, 0.9)' : 'var(--text-primary)',
+                                border: message.sender === 'system' ? '1px solid var(--neon-purple)' : 'none'
+                            }}>
+                                {message.sender !== 'user' && (
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '8px',
+                                        marginBottom: '8px',
+                                        fontSize: '0.8rem',
+                                        color: 'var(--text-secondary)'
+                                    }}>
+                                        {message.sender === 'system' ? <MessageSquare size={14} /> : <Bot size={14} />}
+                                        <span>{message.sender === 'system' ? 'SYSTEM' : message.agent?.toUpperCase()}</span>
+                                    </div>
+                                )}
+                                <div>{message.content}</div>
+                                <div style={{
+                                    fontSize: '0.7rem',
+                                    color: message.sender === 'user' ? 'rgba(10, 15, 20, 0.6)' : 'var(--text-dim)',
+                                    marginTop: '4px',
+                                    textAlign: 'right'
+                                }}>
+                                    {message.timestamp.toLocaleTimeString()}
+                                </div>
+                            </div>
                         </div>
-                        <div style={{ lineHeight: '1.5', fontSize: '0.95rem' }}>{msg.content}</div>
-                    </div>
-                ))}
-                <div ref={scrollRef} />
+                    ))}
+                    <div ref={messagesEndRef} />
+                </div>
             </div>
 
-            {/* INPUT AREA */}
-            <form onSubmit={handleSend} className="glass-panel" style={{ display: 'flex', gap: '10px', padding: '15px' }}>
+            {/* Input Area */}
+            <div className="glass-panel" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                 <input
                     type="text"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder={`Transmit stimuli to ${targetAgent.toUpperCase()}...`}
+                    value={inputMessage}
+                    onChange={(e) => setInputMessage(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder={selectedAgent ? `Message ${selectedAgent.toUpperCase()}...` : "Select an agent first"}
+                    disabled={!selectedAgent || isLoading}
                     style={{
                         flex: 1,
-                        background: 'transparent',
-                        border: 'none',
+                        padding: '12px 16px',
+                        backgroundColor: 'rgba(10, 15, 20, 0.5)',
+                        border: '1px solid var(--void-border)',
+                        borderRadius: '8px',
                         color: 'var(--text-primary)',
                         fontSize: '1rem',
-                        outline: 'none',
-                        fontFamily: 'Inter, sans-serif'
+                        outline: 'none'
                     }}
                 />
                 <button
-                    type="submit"
-                    disabled={sending}
+                    onClick={sendMessage}
+                    disabled={!inputMessage.trim() || !selectedAgent || isLoading}
                     style={{
-                        background: sending ? 'gray' : 'var(--neon-cyan)',
+                        padding: '12px 16px',
+                        backgroundColor: 'var(--neon-cyan)',
                         border: 'none',
                         borderRadius: '8px',
-                        padding: '0 20px',
-                        color: 'black',
-                        fontWeight: 'bold',
-                        cursor: sending ? 'not-allowed' : 'pointer',
+                        color: 'rgba(10, 15, 20, 0.9)',
+                        cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '8px'
+                        gap: '8px',
+                        fontWeight: 'bold',
+                        opacity: (!inputMessage.trim() || !selectedAgent || isLoading) ? 0.5 : 1
                     }}
                 >
-                    {sending ? <Cpu size={18} className="spin" /> : <Send size={18} />}
-                    TRANSMIT
+                    <Send size={16} />
+                    {isLoading ? 'SENDING...' : 'SEND'}
                 </button>
-            </form>
+            </div>
         </div>
     );
 }
