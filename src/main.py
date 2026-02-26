@@ -30,7 +30,7 @@ from src.middleware.security import verify_api_key, check_rate_limit
 from src.api.agents import router as agents_router
 from src.api.graph import router as graph_router
 from src.api.config import router as config_router
-from src.core.database import get_database
+from src.core.database import get_database, StimuliRecord
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
 from src.core.vector import get_vector_client
@@ -57,74 +57,77 @@ logger = logging.getLogger("sovereign-middleware")
 # Lifespan Management
 # =============================================================================
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Manage application lifecycle.
-    
+
     Startup:
     - Initialize PostgreSQL connection
     - Initialize Neo4j connection
-    
+
     Shutdown:
     - Close all database connections gracefully
     """
     logger.info("=== SOVEREIGN SPIRIT MIDDLEWARE STARTING ===")
-    
+
     # Initialize database connections
     db = get_database()
     graph = get_graph()
-    
+
     try:
         await db.initialize()
         logger.info("PostgreSQL connection established")
     except Exception as e:
         logger.error(f"PostgreSQL initialization failed: {e}")
-    
+
     try:
         await graph.initialize()
         logger.info("Neo4j connection established")
     except Exception as e:
         logger.error(f"Neo4j initialization failed: {e}")
-    
+
     # Initialize heartbeat service
     heartbeat = get_heartbeat_service()
     try:
         await heartbeat.start()
-        logger.info(f"Heartbeat service started: {len(heartbeat.registered_agents)} agents")
+        logger.info(
+            f"Heartbeat service started: {len(heartbeat.registered_agents)} agents"
+        )
     except Exception as e:
         logger.error(f"Heartbeat initialization failed: {e}")
-    
+
     # Initialize ngrok tunnel for remote access (if enabled)
     ngrok_tunnel = None
     ngrok_enabled = os.getenv("NGROK_ENABLED", "false").lower() == "true"
     if ngrok_enabled:
         try:
             from pyngrok import ngrok, conf
-            
+
             # Configure ngrok (authtoken from env if available)
             authtoken = os.getenv("NGROK_AUTHTOKEN")
             if authtoken:
                 conf.get_default().auth_token = authtoken
-            
+
             # Start tunnel on port 8090
             ngrok_tunnel = ngrok.connect(8090, bind_tls=True)
             public_url = ngrok_tunnel.public_url
-            
+
             logger.info(f"🌐 REMOTE ACCESS ENABLED: {public_url}")
             logger.info("📱 Use this URL in VoidCat Tether for remote connection")
-            
+
             # Save to environment for other components
             os.environ["VOIDC_PUBLIC_URL"] = public_url
-            
+
         except Exception as e:
             logger.warning(f"ngrok tunnel failed to start: {e}")
             logger.warning("Remote access unavailable - local network only")
-    
+
     logger.info("===SOVEREIGN SPIRIT MIDDLEWARE ONLINE ===")
-    
+
     yield  # Application runs here
-    
+
     # Shutdown ngrok tunnel
     if ngrok_tunnel:
         try:
@@ -132,7 +135,7 @@ async def lifespan(app: FastAPI):
             logger.info("ngrok tunnel closed")
         except Exception as e:
             logger.warning(f"ngrok shutdown warning: {e}")
-    
+
     # Stop heartbeat service
     await heartbeat.stop()
 
@@ -170,6 +173,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"LLM client shutdown warning: {e}")
 
     logger.info("=== SHUTDOWN COMPLETE ===")
+
 
 # =============================================================================
 # FastAPI Application
@@ -214,6 +218,7 @@ app.add_middleware(
 # Security Middleware
 # =============================================================================
 
+
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     """
@@ -237,19 +242,23 @@ async def security_middleware(request: Request, call_next):
 from pydantic import BaseModel
 from typing import List, Optional
 
+
 class LogEntry(BaseModel):
     timestamp: datetime
     agent_id: str
     thought_content: Optional[str] = None
     trigger: str
 
+
 class LogResponse(BaseModel):
     logs: List[LogEntry]
     count: int
 
+
 class PulseRequest(BaseModel):
     agent_id: Optional[str] = None
     action: str = "MUSE"
+
 
 # =============================================================================
 # API Routers
@@ -257,11 +266,13 @@ class PulseRequest(BaseModel):
 
 # Import and register API routers
 from src.api import messages
+
 app.include_router(messages.router)
 
 # =============================================================================
 # Inline API Endpoints (Legacy - to be migrated to routers)
 # =============================================================================
+
 
 @app.get("/api/logs/thoughts", response_model=LogResponse)
 async def get_system_thoughts(limit: int = 50):
@@ -271,19 +282,23 @@ async def get_system_thoughts(limit: int = 50):
     """
     db = get_database()
     # Filter for interesting actions
-    logs = await db.get_system_logs(limit=limit, actions=["MUSE", "TASK", "ACT", "SLEEP"])
-    
+    logs = await db.get_system_logs(
+        limit=limit, actions=["MUSE", "TASK", "ACT", "SLEEP"]
+    )
+
     return LogResponse(
         logs=[
             LogEntry(
                 timestamp=log["timestamp"],
                 agent_id=log["agent_id"],
                 thought_content=log.get("thought_content") or log.get("details"),
-                trigger=log.get("trigger") or log.get("action")
-            ) for log in logs
+                trigger=log.get("trigger") or log.get("action"),
+            )
+            for log in logs
         ],
-        count=len(logs)
+        count=len(logs),
     )
+
 
 @app.post("/api/pulse/trigger")
 async def trigger_pulse(request: PulseRequest):
@@ -294,7 +309,7 @@ async def trigger_pulse(request: PulseRequest):
     """
     service = get_heartbeat_service()
     triggered = []
-    
+
     if request.agent_id:
         # Target specific
         await service.trigger_once(request.agent_id)
@@ -304,24 +319,25 @@ async def trigger_pulse(request: PulseRequest):
         for agent_id in service.registered_agents:
             await service.trigger_once(agent_id)
             triggered.append(agent_id)
-            
+
     return {
         "status": "triggered",
         "action": request.action,
         "agents": triggered,
-        "timestamp": datetime.now(timezone.utc)
+        "timestamp": datetime.now(timezone.utc),
     }
+
 
 @app.get("/health")
 async def health_check():
     """
     Service health endpoint.
-    
+
     Returns status of middleware and connection to Weaviate.
     """
     db = get_database()
     graph = get_graph()
-    
+
     return {
         "status": "online",
         "version": "1.0.0",
@@ -329,6 +345,7 @@ async def health_check():
         "database": "connected" if db._initialized else "disconnected",
         "graph": "connected" if graph._initialized else "disconnected",
     }
+
 
 from src.core.socket_manager import get_connection_manager
 from fastapi import WebSocket, WebSocketDisconnect
@@ -350,78 +367,50 @@ async def websocket_dashboard(websocket: WebSocket):
     """
     manager = get_connection_manager()
     await manager.connect(websocket)
-    
+
     db_client = get_database()
     identity_mgr = get_identity_manager(db_client)
     heartbeat = get_heartbeat_service()
-    
+
     # Construction of "Throne" Protocol
     try:
-        # Construct initial state packet (fetch real data)
-        agents = await db_client.list_agents()
-        if agents:
-            vessel = agents[0]  # default to first agent for now
-            initial_state = {
-                "type": "STATE_UPDATE",
-                "payload": {
-                    "identity": {
-                        "name": vessel.name, 
-                        "persona": vessel.designation, 
-                        "voice_active": False
-                    },
-                    "mind": {
-                        "mood": vessel.current_mood, 
-                        "active_thought": "Observing Throne connection...", 
-                        "current_goal": "System Standby", 
-                        "attention_focus": "Dashboard"
-                    },
-                    "stats": {
-                        "memory_usage": 0, 
-                        "uptime": (datetime.now(timezone.utc) - vessel.created_at).total_seconds() if vessel.created_at else 0, 
-                        "heartbeat_latency": 0
+
+        async def _build_all_agents_payload() -> dict:
+            agents = await db_client.list_agents()
+            now = datetime.now(timezone.utc)
+            agent_list = []
+            for agent in agents:
+                uptime = (
+                    (now - agent.created_at).total_seconds() if agent.created_at else 0
+                )
+                agent_list.append(
+                    {
+                        "id": agent.name.lower(),
+                        "name": agent.name,
+                        "designation": agent.designation or "",
+                        "mood": agent.current_mood or "Neutral",
+                        "uptime": uptime,
+                        "last_pulse": None,
                     }
-                }
-            }
-            await websocket.send_json(initial_state)
-        
-        async def broadcast_updates():
-            """Background loop to broadcast state updates to the connected dashboard."""
-            last_ping = datetime.now(timezone.utc)
+                )
+            return {"type": "STATE_UPDATE", "payload": {"agents": agent_list}}
+
+        # Send initial multi-agent state packet
+        initial = await _build_all_agents_payload()
+        await websocket.send_json(initial)
+
+        async def broadcast_updates() -> None:
             try:
                 while True:
-                    # Fetch fresh state
-                    agents = await db_client.list_agents()
-                    if agents:
-                        vessel = agents[0]
-                        update = {
-                            "type": "STATE_UPDATE",
-                            "payload": {
-                                "identity": {
-                                    "name": vessel.name,
-                                    "persona": vessel.designation,
-                                    "voice_active": False
-                                },
-                                "mind": {
-                                    "mood": vessel.current_mood,
-                                    "active_thought": "Synchronized with Throne",
-                                    "current_goal": "Awaiting Command",
-                                    "attention_focus": "Master"
-                                },
-                                "stats": {
-                                    "uptime": (datetime.now(timezone.utc) - vessel.created_at).total_seconds() if vessel.created_at else 0,
-                                }
-                            }
-                        }
-                        await websocket.send_json(update)
-                    
-                    # Sleep before next update (keep it mellow, 2 seconds)
+                    update = await _build_all_agents_payload()
+                    await websocket.send_json(update)
                     await asyncio.sleep(2)
             except Exception as e:
                 logger.debug(f"Broadcast loop stopped: {e}")
 
         # Start the broadcast loop in the background
         update_task = asyncio.create_task(broadcast_updates())
-        
+
         while True:
             # Keep alive and listen for "God Mode" commands
             data_str = await websocket.receive_text()
@@ -429,16 +418,16 @@ async def websocket_dashboard(websocket: WebSocket):
                 data = json.loads(data_str)
                 cmd_type = data.get("type")
                 payload = data.get("payload", {})
-                
+
                 logger.info(f"Dashboard command received: {cmd_type}")
-                
+
                 if cmd_type == "GOD_SYNC":
                     agent_id = payload.get("agent_id", "sovereign-001")
                     target = payload.get("spirit")
                     if target:
                         await identity_mgr.sync_agent_identity(agent_id, target)
                         logger.info(f"GOD_SYNC: {agent_id} synced to {target}")
-                
+
                 elif cmd_type == "GOD_MOOD":
                     agent_id = payload.get("agent_id", "sovereign-001")
                     mood = payload.get("mood")
@@ -450,62 +439,66 @@ async def websocket_dashboard(websocket: WebSocket):
                     agent_id = payload.get("agent_id", "sovereign-001")
                     content = payload.get("content")
                     if content:
-                        from src.core.database import StimuliRecord
-                        await db_client.record_stimuli(StimuliRecord(agent_id=agent_id, content=content, source="god_mode"))
+                        await db_client.record_stimuli(
+                            StimuliRecord(
+                                agent_id=agent_id, content=content, source="god_mode"
+                            )
+                        )
                         # Trigger pulse immediately
                         await heartbeat.trigger_once(agent_id)
                         logger.info(f"GOD_STIMULI: Injected to {agent_id}")
 
                 # Echo back success or simple acknowledgement
-                await websocket.send_json({"type": "CMD_ACK", "status": "processed", "cmd": cmd_type})
-                
+                await websocket.send_json(
+                    {"type": "CMD_ACK", "status": "processed", "cmd": cmd_type}
+                )
+
             except json.JSONDecodeError:
                 await websocket.send_text(f"Invalid JSON received: {data_str}")
             except Exception as e:
                 logger.error(f"Error processing command {data_str}: {e}")
-                await websocket.send_json({"type": "CMD_ACK", "status": "failed", "error": str(e)})
-            
+                await websocket.send_json(
+                    {"type": "CMD_ACK", "status": "failed", "error": str(e)}
+                )
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
         logger.error(f"Dashboard WebSocket error: {e}")
         manager.disconnect(websocket)
     finally:
-        if 'update_task' in locals():
+        if "update_task" in locals():
             update_task.cancel()
 
 
 @app.post("/v1/graphql")
 async def proxy_graphql(
-    request: Request,
-    x_agent_id: str = Header(..., alias="X-Agent-ID")
+    request: Request, x_agent_id: str = Header(..., alias="X-Agent-ID")
 ):
     """
     Proxy and sanitize GraphQL queries to Weaviate.
-    
+
     This is the primary endpoint used by SillyTavern for memory retrieval.
     Applies Valence Stripping to ensure agent-specific memory isolation.
     """
     body = await request.json()
-    
+
     logger.info(f"Intercepting GraphQL query for Agent: {x_agent_id}")
-    
+
     async with httpx.AsyncClient() as client:
         try:
             # 1. Forward to real Weaviate
             response = await client.post(
-                f"{WEAVIATE_URL}/v1/graphql",
-                json=body,
-                timeout=10.0
+                f"{WEAVIATE_URL}/v1/graphql", json=body, timeout=10.0
             )
             response.raise_for_status()
             data = response.json()
-            
+
             # 2. Apply Valence Stripping to response
             sanitized_data = sanitize_weaviate_response(data, x_agent_id)
-            
+
             return sanitized_data
-            
+
         except httpx.HTTPStatusError as e:
             logger.error(f"Weaviate error: {e}")
             raise HTTPException(status_code=e.response.status_code, detail=str(e))
@@ -517,16 +510,16 @@ async def proxy_graphql(
 def sanitize_weaviate_response(data: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
     """
     Traverses the Weaviate GraphQL response and applies valence stripping.
-    
+
     Memory objects authored by other agents have their subjective_voice
     and emotional_valence stripped to prevent Soul Bleed.
     """
     # Check if response contains memory data
     if "data" not in data or "Get" not in data.get("data", {}):
         return data
-    
+
     get_data = data["data"]["Get"]
-    
+
     # Process Memory collection if present
     if "Memory" in get_data and isinstance(get_data["Memory"], list):
         raw_memories = []
@@ -544,10 +537,10 @@ def sanitize_weaviate_response(data: Dict[str, Any], agent_id: str) -> Dict[str,
             except Exception as e:
                 logger.warning(f"Skipping malformed memory: {e}")
                 continue
-        
+
         # Apply valence stripping
         stripped = process_memory_batch(raw_memories, agent_id)
-        
+
         # Replace with stripped version
         data["data"]["Get"]["Memory"] = [
             {
@@ -560,7 +553,7 @@ def sanitize_weaviate_response(data: Dict[str, Any], agent_id: str) -> Dict[str,
             }
             for m in stripped
         ]
-    
+
     return data
 
 
@@ -580,6 +573,7 @@ if not os.path.exists(static_dir):
 # explicit root handler to ensure index.html is served
 from fastapi.responses import FileResponse
 
+
 @app.get("/")
 async def serve_dashboard():
     index_path = os.path.join(static_dir, "index.html")
@@ -587,9 +581,10 @@ async def serve_dashboard():
         raise HTTPException(status_code=404, detail="Index not found")
     return FileResponse(index_path)
 
+
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8090)
 
+    uvicorn.run(app, host="0.0.0.0", port=8090)
