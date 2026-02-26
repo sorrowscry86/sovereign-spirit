@@ -38,6 +38,7 @@ from src.middleware.security import verify_api_key, check_rate_limit
 from src.api.agents import router as agents_router
 from src.api.graph import router as graph_router
 from src.api.config import router as config_router
+from src.api.memory import router as memory_router
 from src.core.database import get_database, StimuliRecord
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
@@ -363,6 +364,7 @@ async def health_check():
 app.include_router(agents_router, prefix="/agent")
 app.include_router(graph_router)
 app.include_router(config_router)
+app.include_router(memory_router)
 
 
 @app.websocket("/ws/dashboard")
