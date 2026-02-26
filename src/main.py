@@ -21,7 +21,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, Request, Header, HTTPException, Depends
+from fastapi import (
+    FastAPI,
+    Request,
+    Header,
+    HTTPException,
+    Depends,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -37,6 +45,7 @@ from src.core.vector import get_vector_client
 from src.core.cache import get_cache
 from src.core.llm_client import shutdown_llm_client
 from src.core.identity.manager import get_identity_manager
+from src.core.socket_manager import get_connection_manager
 
 # =============================================================================
 # Configuration
@@ -347,9 +356,6 @@ async def health_check():
     }
 
 
-from src.core.socket_manager import get_connection_manager
-from fastapi import WebSocket, WebSocketDisconnect
-
 # =============================================================================
 # Router Registration
 # =============================================================================
@@ -373,6 +379,7 @@ async def websocket_dashboard(websocket: WebSocket):
     heartbeat = get_heartbeat_service()
 
     # Construction of "Throne" Protocol
+    update_task = None
     try:
 
         async def _build_all_agents_payload() -> dict:
@@ -380,9 +387,10 @@ async def websocket_dashboard(websocket: WebSocket):
             now = datetime.now(timezone.utc)
             agent_list = []
             for agent in agents:
-                uptime = (
-                    (now - agent.created_at).total_seconds() if agent.created_at else 0
-                )
+                created_at = agent.created_at
+                if created_at is not None and created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                uptime = (now - created_at).total_seconds() if created_at else 0
                 agent_list.append(
                     {
                         "id": agent.name.lower(),
@@ -406,7 +414,7 @@ async def websocket_dashboard(websocket: WebSocket):
                     await websocket.send_json(update)
                     await asyncio.sleep(2)
             except Exception as e:
-                logger.debug(f"Broadcast loop stopped: {e}")
+                logger.warning(f"Broadcast loop stopped: {e}")
 
         # Start the broadcast loop in the background
         update_task = asyncio.create_task(broadcast_updates())
@@ -467,7 +475,7 @@ async def websocket_dashboard(websocket: WebSocket):
         logger.error(f"Dashboard WebSocket error: {e}")
         manager.disconnect(websocket)
     finally:
-        if "update_task" in locals():
+        if update_task is not None:
             update_task.cancel()
 
 
