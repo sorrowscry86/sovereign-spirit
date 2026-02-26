@@ -9,7 +9,7 @@ Unit tests for the Agent Management API endpoints.
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -29,8 +29,8 @@ def mock_database():
         designation="E-01",
         current_mood="neutral",
         system_prompt="Test prompt",
-        last_active=datetime.utcnow(),
-        created_at=datetime.utcnow(),
+        last_active=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
     ))
     mock_db.record_stimuli = AsyncMock(return_value=1)
     mock_db.touch_agent = AsyncMock(return_value=True)

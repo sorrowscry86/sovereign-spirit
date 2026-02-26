@@ -1,7 +1,48 @@
 {
   "permissions": {
     "allow": [
-      "mcp__sequential-thinking__sequentialthinking"
+      "mcp__sequential-thinking__*",
+      "mcp__desktop-commander__*",
+      "mcp__voiddispatcher__*",
+      "mcp__chronos__*",
+      "mcp__context7__*",
+      "mcp__docker-mcp-gateway__*",
+      "mcp__lotus-wisdom__*",
+      "mcp__perplexity-ask__*",
+      "mcp__playwright__*",
+      "Bash(test)",
+      "Bash(cd:*)",
+      "Bash(echo:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m black:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(grep:*)",
+      "Bash(python -m py_compile:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/secret_guard.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/black_format.py"
+          }
+        ]
+      }
     ]
   }
 }

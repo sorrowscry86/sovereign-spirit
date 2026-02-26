@@ -43,7 +43,7 @@ Sovereign Spirit/
 
 | Layer | Tech | Port |
 |:------|:-----|:-----|
-| Middleware | FastAPI | 8000 |
+| Middleware | FastAPI | 8020 |
 | Dashboard | React / Vite | 5173 |
 | Vector DB | Weaviate | 8090 |
 | Graph DB | Neo4j | 7687 |

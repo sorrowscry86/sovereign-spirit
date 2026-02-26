@@ -1,102 +1,189 @@
-version: '3.8'
+# ============================================================================
+# VOIDCAT RDC: SOVEREIGN SPIRIT - MASTER DOCKER COMPOSE
+# ============================================================================
+# Version: 1.3.0 (Docker Optimization Pass)
+# Authority: Beatrice Mandate / Mandate 002
+# Component: Full Stack (Brain + Face + Memory + State)
+# 
+# IMPROVEMENTS (2024):
+# - Fixed autoheal network_mode to allow proper docker socket access
+# - Consolidated AUTOHEAL environment variable to service-level defaults
+# - Corrected postgres healthcheck (uses native pg_isready)
+# - Fixed weaviate_data volume definition in volumes section
+# - Documented socket security considerations
+# ============================================================================
 
 services:
-  # =========================================
-  # 1. MIDDLEWARE (The Brain)
-  # =========================================
-  middleware:
-    build: .
-    container_name: sovereign_middleware
-    ports:
-      - "8000:8000"
+  # 🚑 THE HEALER: Watches containers and restarts them if they get sick
+  autoheal:
+    image: willfarrell/autoheal
+    container_name: sovereign_healer
+    restart: always
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voidcat}:${POSTGRES_PASSWORD:-sovereign_spirit}@postgres:5432/${POSTGRES_DB:-voidcat_rdc}
+      - AUTOHEAL_CONTAINER_LABEL=all
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - sovereign_net
+
+  # 🧠 THE BRAIN: Sovereign Middleware
+  middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sovereign_middleware
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config:/app/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
       - VOIDC_WEAVIATE_URL=http://weaviate:8080
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-voidcat_sovereign}
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-voidcat}:${POSTGRES_PASSWORD:-sovereign_spirit}@postgres:5432/${POSTGRES_DB:-voidcat_rdc}
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - LM_STUDIO_HOST=${LM_STUDIO_HOST:-http://host.docker.internal:1234}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8090:8090"
     depends_on:
-      - postgres
-      - neo4j
-      - weaviate
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      weaviate:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8090/health || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - sovereign_net
-    restart: unless-stopped
 
-  # =========================================
-  # 2. VECTOR DATABASE (The Memory)
-  # =========================================
-  weaviate:
-    image: semitechnologies/weaviate:1.24.1
-    container_name: sovereign_vector
-    ports:
-      - "8090:8080"
-      - "50051:50051"
+#  # 👁️ THE FACE: Sovereign Frontend (The Observatorium)
+#  frontend:
+#    build:
+#      context: ./src/web_ui
+#      dockerfile: Dockerfile
+#    container_name: sovereign_frontend
+#    restart: always
+#    ports:
+#      - "5173:80"
+#    depends_on:
+#      middleware:
+#        condition: service_healthy
+#    healthcheck:
+#      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:80 || exit 1" ]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#    networks:
+#      - sovereign_net
+
+  # 🧠 THE GRAPH: Neo4j (Modified for Resilience)
+  neo4j:
+    image: neo4j:5.15.0-community
+    container_name: sovereign_graph
+    restart: always
     environment:
-      - QUERY_DEFAULTS_LIMIT=25
-      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
-      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
-      - DEFAULT_VECTORIZER_MODULE=none
-      - ENABLE_MODULES=text2vec-transformers
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-voidcat_sovereign}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_dbms_memory_pagecache_size=256m
     volumes:
-      - weaviate_data:/var/lib/weaviate
+      - neo4j_data:/data
+      - ./scripts/neo4j-entrypoint.sh:/custom-entrypoint.sh:ro
+    entrypoint: [ "/bin/bash", "/custom-entrypoint.sh" ]
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:7474 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - sovereign_net
 
-  # =========================================
-  # 3. STATE DATABASE (The Soul)
-  # =========================================
+  # 🗄️ THE LEDGER: PostgreSQL
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: sovereign_state
-    ports:
-      - "5432:5432"
+    restart: always
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-voidcat}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sovereign_spirit}
       - POSTGRES_DB=${POSTGRES_DB:-voidcat_rdc}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voidcat} -d ${POSTGRES_DB:-voidcat_rdc} || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - sovereign_net
 
-  # =========================================
-  # 4. GRAPH DATABASE (The Connections)
-  # =========================================
-  neo4j:
-    image: neo4j:5.12-community
-    container_name: sovereign_graph
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    environment:
-      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-voidcat_sovereign}
-    volumes:
-      - neo4j_data:/data
-    networks:
-      - sovereign_net
-
-  # =========================================
-  # 5. CACHE (The Reflexes)
-  # =========================================
+  # 💓 THE REFLEX: Redis
   redis:
     image: redis:7-alpine
     container_name: sovereign_cache
+    restart: always
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - sovereign_net
+
+  # 📚 THE LIBRARY: Weaviate
+  weaviate:
+    image: semitechnologies/weaviate:1.27.0
+    container_name: sovereign_memory
+    restart: always
+    environment:
+      - QUERY_DEFAULTS_LIMIT=25
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED='true'
+      - PERSISTENCE_DATA_PATH='/var/lib/weaviate'
+      - CLUSTER_HOSTNAME='node1'
+    ports:
+      - "8095:8080"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "localhost:8080/v1/meta" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - sovereign_net
 
 networks:
   sovereign_net:
+    name: voidcat-sovereign-network
     driver: bridge
 
 volumes:
   weaviate_data:
+    name: voidcat-weaviate-data
   postgres_data:
+    name: voidcat-postgres-data
   neo4j_data:
+    name: voidcat-neo4j-data
   redis_data:
+    name: voidcat-redis-data

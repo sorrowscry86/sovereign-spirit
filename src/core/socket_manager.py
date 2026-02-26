@@ -1,9 +1,10 @@
 """
 VoidCat RDC: Sovereign Spirit - Connection Manager
 ==================================================
-Version: 1.0.0
+Version: 1.0.1
 Author: Echo (E-01)
 Date: 2026-01-24
+Restored: 2026-02-26 by Vivy (Context Integrator)
 
 Manages WebSocket connections for The Observatorium.
 Broadcasts 'Pulse' events to all connected clients.
@@ -36,7 +37,7 @@ class ConnectionManager:
     async def broadcast(self, event_type: str, payload: Dict[str, Any]):
         """
         Send a signal to all connected observers.
-        
+
         Args:
             event_type: e.g., 'HEARTBEAT', 'STATUS_CHANGE', 'SYSTEM_ALERT'
             payload: JSON-serializable data
@@ -57,7 +58,7 @@ class ConnectionManager:
             except Exception as e:
                 logger.warning(f"Failed to transmit pulse to observer: {e}")
                 to_remove.append(connection)
-        
+
         # Cleanup dead connections
         for dead in to_remove:
             self.disconnect(dead)

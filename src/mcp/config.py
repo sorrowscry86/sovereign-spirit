@@ -22,6 +22,19 @@ MCP_SERVER_REGISTRY = {
         "command": "python",
         "args": ["-m", "src.mcp.servers.git"],
         "env": {"PATH": os.environ["PATH"], "PYTHONUNBUFFERED": "1"}
+    },
+    "chronos": {
+        "command": "python",
+        "args": ["-m", "src.mcp.servers.chronos"],
+        "env": {"PATH": os.environ["PATH"], "PYTHONUNBUFFERED": "1"}
+    },
+    "search": {
+        "command": NPX_PATH,
+        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+        "env": {
+            "PATH": os.environ["PATH"],
+            "BRAVE_SEARCH_API_KEY": os.getenv("BRAVE_SEARCH_API_KEY", "")
+        }
     }
 }
 

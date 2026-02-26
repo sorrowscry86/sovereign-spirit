@@ -12,7 +12,7 @@ Implements 'Valence Stripping' to prevent Soul Bleed.
 import asyncio
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.core.memory.types import EpisodicMemory, PrismContext, WorkingMemory
 from src.core.vector import get_vector_client
@@ -172,7 +172,7 @@ class PrismEngine:
             "content": content,
             "subjective_voice": voice,
             "emotional_valence": valence,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         await self.cache.push_message(session_id, msg)
 

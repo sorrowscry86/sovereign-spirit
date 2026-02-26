@@ -13,7 +13,7 @@ import logging
 import re
 import uuid
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Path
 from pydantic import BaseModel, Field
@@ -30,6 +30,12 @@ from src.middleware.valence_stripping import process_memory_batch, MemoryObject
 from src.middleware.security import sanitize_message_content
 from src.core.identity.manager import get_identity_manager
 from src.core.vector import get_vector_client
+from src.adapters.voice_adapter import get_voice_adapter
+from src.adapters.search_adapter import SearchAdapter
+from src.adapters.search_adapter import SearchAdapter
+from src.mcp.client import MCPManager
+from src.core.sentinel import get_immune_system
+from src.middleware.persona import get_persona_manager
 
 logger = logging.getLogger("sovereign.api.agents")
 
@@ -62,6 +68,13 @@ class StateResponse(BaseModel):
     last_active: Optional[datetime]
     pending_tasks: int
     queued_responses: List[Dict[str, Any]]
+
+
+class AgentListResponse(BaseModel):
+    """Response model for listing all agents."""
+    agents: List[StateResponse]
+    count: int
+
 
 
 class MemoryQuery(BaseModel):
@@ -151,6 +164,43 @@ async def get_graph_db() -> GraphClient:
 # Endpoints
 # =============================================================================
 
+@router.get("/", response_model=AgentListResponse)
+async def list_agents(
+    db: DatabaseClient = Depends(get_db),
+    graph: GraphClient = Depends(get_graph_db),
+):
+    """
+    List all available sovereign agents.
+    
+    Used by the dashboard to populate the agent selector.
+    """
+    # Get all agents from DB
+    agents = await db.list_agents()
+    
+    response_list = []
+    for agent in agents:
+        # Get pending tasks for each (could be optimized with batch query)
+        pending_tasks = await graph.get_pending_tasks_count(agent.agent_id)
+        
+        # Get queued responses
+        queued = await db.get_queued_responses(agent.agent_id)
+        
+        response_list.append(StateResponse(
+            agent_id=agent.agent_id,
+            name=agent.name,
+            designation=agent.designation,
+            current_mood=agent.current_mood,
+            last_active=agent.last_active,
+            pending_tasks=pending_tasks,
+            queued_responses=queued,
+        ))
+    
+    return AgentListResponse(
+        agents=response_list,
+        count=len(response_list),
+    )
+
+
 @router.post("/{agent_id}/stimuli", response_model=StimuliResponse)
 async def process_stimuli(
     agent_id: str = Path(..., min_length=1, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$"),
@@ -181,6 +231,13 @@ async def process_stimuli(
     )
     message_id = await db.record_stimuli(stimuli)
     
+    # PHASE IV: Fluid Persona Shift
+    try:
+        persona_mgr = get_persona_manager(db)
+        await persona_mgr.analyze_and_shift(agent_id, sanitized_message)
+    except Exception as e:
+        logger.warning(f"Persona shift failed: {e}")
+
     # Touch agent (update last_active)
     await db.touch_agent(agent_id)
     
@@ -190,7 +247,7 @@ async def process_stimuli(
         status="received",
         message_id=str(message_id),
         agent_id=agent_id,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
@@ -314,6 +371,10 @@ async def trigger_spirit_sync(
             status_code=404, 
             detail=f"Sync failed: Target spirit '{request.target_spirit}' not found."
         )
+
+    # Auditory Feedback
+    voice = get_voice_adapter()
+    voice.speak(f"Spirit synchronization complete. I am now {updated_state.name}.", persona=updated_state.name.lower())
         
     # Broadcast via WebSocket
     from src.core.socket_manager import get_connection_manager
@@ -322,7 +383,7 @@ async def trigger_spirit_sync(
         "agent_id": agent_id,
         "synced_to": updated_state.name,
         "designation": updated_state.designation,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return SyncResponse(
@@ -330,7 +391,7 @@ async def trigger_spirit_sync(
         agent_id=agent_id,
         synced_to=updated_state.name,
         designation=updated_state.designation,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
@@ -377,6 +438,11 @@ async def trigger_heartbeat_cycle(
     
     logger.info(f"Heartbeat cycle for {agent_id}: {action}")
 
+    # Auditory Feedback (if acting)
+    if action == "ACT":
+        voice = get_voice_adapter()
+        voice.speak(f"Alert. I am attending to my duties: {details}", persona=agent_id.lower())
+
     # Broadcast via WebSocket
     from src.core.socket_manager import get_connection_manager
     manager = get_connection_manager()
@@ -384,7 +450,7 @@ async def trigger_heartbeat_cycle(
         "agent_id": agent_id,
         "action": action,
         "thought": details,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return CycleResponse(
@@ -392,5 +458,5 @@ async def trigger_heartbeat_cycle(
         action=action,
         details=details,
         cycle_id=str(cycle_id),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )

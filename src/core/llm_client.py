@@ -130,6 +130,14 @@ class LLMClient:
         self.inference_mode: str = "AUTO"
         self.current_route: str = "LOCAL"
         self._client = httpx.AsyncClient(timeout=60.0)
+
+    def _get_bifrost_signature(self, provider_type: ProviderType) -> str:
+        """Generate Bifrost provenance signature."""
+        if provider_type == ProviderType.LM_STUDIO:
+            return "[BIFROST: THINKING]"
+        elif provider_type in [ProviderType.OPENROUTER, ProviderType.OPENAI]:
+            return "[BIFROST: CLOUD]"
+        return "[BIFROST: LOCAL]"
     
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -174,19 +182,10 @@ class LLMClient:
         temperature: Optional[float] = None,
         provider_name: Optional[str] = None,
         use_fallback: bool = True,
+        complexity: str = "direct",  # direct | reasoning
     ) -> CompletionResponse:
         """
-        Generate a chat completion.
-        
-        Args:
-            messages: List of chat messages
-            max_tokens: Override max tokens
-            temperature: Override temperature
-            provider_name: Specific provider to use
-            use_fallback: Try fallback providers on failure
-        
-        Returns:
-            CompletionResponse with generated content
+        Generate a chat completion with Bifrost Dynamic Routing.
         """
         # Determine allowed provider types based on Bifrost Mode
         allowed_types = []
@@ -197,18 +196,26 @@ class LLMClient:
         else: # AUTO
             allowed_types = [t for t in ProviderType]
 
-        # Determine target provider
-        target = provider_name or self.active_provider
+        # Bifrost Routing Logic
+        providers_to_try = []
         
-        # If AUTO, we might want to adjust based on current_route
-        # In this simplified phase, we follow the user override strictly if set
-        
-        providers_to_try = [target] if provider_name else (
-            [self.active_provider] + [p for p in self.fallback_chain if p != self.active_provider]
-            if use_fallback else [self.active_provider]
-        )
-        
-        # Filter by allowed Bifrost types
+        if provider_name:
+            # Explicit override
+            providers_to_try = [provider_name]
+        elif self.inference_mode == "AUTO":
+            # Dynamic routing based on complexity
+            if complexity == "reasoning":
+                # Prioritize Thinking models (LM Studio) or Cloud
+                providers_to_try = ["lm_studio", "openrouter", "ollama_local"]
+            else:
+                # Direct tasks use fastest local option
+                providers_to_try = ["ollama_local", "lm_studio", "openrouter"]
+        else:
+            # Standard fallback chain filtered by mode
+            chain = [self.active_provider] + [p for p in self.fallback_chain if p != self.active_provider]
+            providers_to_try = chain
+
+        # Filter by allowed Bifrost types and existence
         providers_to_try = [
             p for p in providers_to_try 
             if p in self.providers and self.providers[p].provider_type in allowed_types
@@ -221,7 +228,7 @@ class LLMClient:
         for p_name in providers_to_try:
             try:
                 return await self._complete_with_provider(
-                    p_name, messages, max_tokens, temperature
+                    p_name, messages, max_tokens, temperature, complexity
                 )
             except Exception as e:
                 logger.warning(f"Provider {p_name} failed: {e}")
@@ -241,10 +248,91 @@ class LLMClient:
         messages: List[ChatMessage],
         max_tokens: Optional[int],
         temperature: Optional[float],
+        complexity: str = "direct",
     ) -> CompletionResponse:
         """Execute completion with a specific provider."""
         config = self.get_provider(provider_name)
         
+        # ---------------------------------------------------------------------
+        # LM Studio SDK Integration
+        # ---------------------------------------------------------------------
+        if config.provider_type == ProviderType.LM_STUDIO:
+            try:
+                import lmstudio as lms
+            except ImportError:
+                raise ImportError("lmstudio SDK not installed. Run `pip install lmstudio`.")
+
+            # Clean endpoint for SDK (remove /v1 if present, though SDK might handle it)
+            # SDK expects "ws://localhost:1234" or "http://localhost:1234"
+            # Our config.endpoint usually has "/v1" appended.
+            base_url = config.endpoint.replace("/v1", "")
+            
+            # Determine Model ID based on Complexity
+            # TODO: externalize these model IDs to env vars or config
+            target_model_id = config.model # Default to "auto"
+            
+            if complexity == "reasoning":
+                # Try to find a reasoning model (Qwen)
+                target_model_id = os.getenv("LM_STUDIO_REASONING_MODEL", "qwen") 
+            elif complexity == "direct":
+                 target_model_id = os.getenv("LM_STUDIO_DIRECT_MODEL", "mistral")
+
+            # Initialize Client and Generate (Sync Wrapper)
+            def _sync_generate():
+                with lms.Client(base_url=base_url) as client:
+                    # Get Model Handle
+                    if target_model_id == "auto":
+                         model = client.llm.model() 
+                    else:
+                         model = client.llm.model(target_model_id)
+
+                    # Prepare Messages
+                    sdk_messages = [{"role": m.role, "content": m.content} for m in messages]
+                    
+                    # Generate config
+                    pred_config = {}
+                    if max_tokens: pred_config["max_tokens"] = max_tokens
+                    if temperature: pred_config["temperature"] = temperature
+                    
+                    return model.respond(sdk_messages, **pred_config)
+
+            try:
+                # Run sync SDK in thread to avoid blocking event loop
+                result = await asyncio.to_thread(_sync_generate)
+                
+                # Process Result
+                content = result.content
+                
+                # Apply Bifrost Signature
+                if "[STATE:" in content or "[SYNC:" in content:
+                    signature = self._get_bifrost_signature(config.provider_type)
+                    if signature not in content:
+                        if content.strip().startswith("["):
+                            content = f"{signature} {content}"
+
+                return CompletionResponse(
+                    content=content,
+                    model=target_model_id,
+                    provider=provider_name,
+                    tokens_used=None, 
+                    finish_reason="stop",
+                )
+
+            except Exception as e:
+                # Fallback to standard HTTP if SDK fails or model not found
+                logger.warning(f"LM Studio SDK failed, attempting HTTP fallback: {e}")
+                # Proceed to HTTP implementation below
+                pass
+
+            except Exception as e:
+                # Fallback to standard HTTP if SDK fails or model not found
+                logger.warning(f"LM Studio SDK failed, attempting HTTP fallback: {e}")
+                # Proceed to HTTP implementation below
+                pass
+
+        # ---------------------------------------------------------------------
+        # Standard HTTP Implementation (OpenAI Compatible)
+        # ---------------------------------------------------------------------
         url = f"{config.endpoint}/chat/completions"
         headers = self._build_headers(config)
         
@@ -263,9 +351,17 @@ class LLMClient:
         
         data = response.json()
         choice = data["choices"][0]
+        content = choice["message"]["content"]
         
+        # Apply Bifrost Signature
+        if "[STATE:" in content or "[SYNC:" in content:
+            signature = self._get_bifrost_signature(config.provider_type)
+            if signature not in content:
+                if content.strip().startswith("["):
+                    content = f"{signature} {content}"
+
         return CompletionResponse(
-            content=choice["message"]["content"],
+            content=content,
             model=data.get("model", config.model),
             provider=provider_name,
             tokens_used=data.get("usage", {}).get("total_tokens"),

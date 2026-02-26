@@ -14,8 +14,9 @@ import os
 import random
 import logging
 import uuid
+import re
 from typing import Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -32,7 +33,7 @@ logger = logging.getLogger("sovereign.heartbeat.pulse")
 # Heartbeat interval settings (from .env)
 BASE_INTERVAL_MS = int(os.getenv("HEARTBEAT_INTERVAL_MS", "90000"))
 JITTER_MS = int(os.getenv("HEARTBEAT_JITTER_MS", "15000"))
-MAX_TOKENS = int(os.getenv("HEARTBEAT_MAX_TOKENS", "75"))
+MAX_TOKENS = int(os.getenv("HEARTBEAT_MAX_TOKENS", "300"))
 TEMPERATURE = float(os.getenv("HEARTBEAT_TEMPERATURE", "0.6"))
 
 # Ollama configuration (deprecated - now uses llm_client)
@@ -49,6 +50,10 @@ Current Status: {status}
 User Last Active: {last_active}
 Pending Tasks: {pending_tasks}
 
+[ATTENTION STIMULI]
+Unread Messages: {unread_count}
+Last Message: "{last_message}"
+
 Evaluate your current state. Reply ONLY with one of:
 - SLEEP (if no action needed)
 - ACT: [Brief task description] (if action required)
@@ -63,6 +68,27 @@ Keep it under 30 words. Be warm but concise."""
 # =============================================================================
 # Pulse Functions
 # =============================================================================
+
+def extract_thought(response: str) -> Tuple[str, Optional[str]]:
+    """
+    Extracts content inside <think>...</think> tags.
+    Returns (cleaned_content, thought_content).
+    """
+    thought_match = re.search(r"<think>(.*?)</think>", response, re.DOTALL)
+    if thought_match:
+        thought_content = thought_match.group(1).strip()
+        cleaned_content = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        return cleaned_content, thought_content
+        
+    # Check for truncated thought (start tag but no end tag)
+    # This prevents the thought from leaking into the action if tokens run out
+    start_match = re.search(r"<think>(.*)$", response, re.DOTALL)
+    if start_match:
+        thought_content = start_match.group(1).strip()
+        return "", thought_content  # Return empty action for safety
+        
+    return response.strip(), None
+
 
 def calculate_next_interval() -> float:
     """
@@ -96,11 +122,21 @@ async def check_agent_status(
     
     # Calculate last active
     if agent.last_active:
-        delta = datetime.utcnow() - agent.last_active
+        delta = datetime.now(timezone.utc) - agent.last_active
         minutes = int(delta.total_seconds() / 60)
         last_active = f"{minutes}m ago"
     else:
         last_active = "unknown"
+        
+    # Get Unread Messages (The Hearing Aid)
+    unread_count = await db.get_unread_message_count(agent_id)
+    recent_msgs = await db.get_recent_stimuli(agent_id, limit=1)
+    last_message = recent_msgs[0]['content'] if recent_msgs else "None"
+    sender = recent_msgs[0]['sender'] if recent_msgs else "None"
+    
+    status_str = "idle"
+    if pending_count > 0 or unread_count > 0:
+        status_str = f"{pending_count} tasks, {unread_count} msgs"
     
     return {
         "exists": True,
@@ -111,7 +147,9 @@ async def check_agent_status(
         "last_active": last_active,
         "pending_count": pending_count,
         "pending_tasks": pending_tasks,
-        "status": "idle" if pending_count == 0 else f"{pending_count} pending task(s)",
+        "unread_count": unread_count,
+        "last_message": f"{last_message} (from {sender})" if unread_count > 0 else "None",
+        "status": status_str,
     }
 
 
@@ -131,6 +169,8 @@ async def generate_micro_thought(
         status=agent_status["status"],
         last_active=agent_status["last_active"],
         pending_tasks=agent_status["pending_count"],
+        unread_count=agent_status.get("unread_count", 0),
+        last_message=agent_status.get("last_message", "None"),
     )
     
     try:
@@ -145,10 +185,16 @@ async def generate_micro_thought(
             max_tokens=MAX_TOKENS,
             temperature=TEMPERATURE,
             use_fallback=True,
+            complexity="reasoning"
         )
         
-        result = response.content.strip()
-        logger.debug(f"Micro-thought response from {response.provider}: {result}")
+        result_raw = response.content.strip()
+        result, thought = extract_thought(result_raw)
+        
+        if thought:
+            logger.info(f"Internal Monologue ({response.provider}): {thought}")
+            
+        logger.debug(f"Micro-thought action from {response.provider}: {result}")
         
         # Parse response
         if result.upper().startswith("SLEEP"):
@@ -202,6 +248,7 @@ async def execute_pulse(
     agent_id: str,
     db: DatabaseClient,
     graph: GraphClient,
+    user_message: Optional[str] = None,
 ) -> dict:
     """
     Execute a single heartbeat pulse for an agent.
@@ -212,9 +259,15 @@ async def execute_pulse(
     3. Execute action if needed
     4. Log the cycle
     
+    Args:
+        agent_id: The agent to pulse
+        db: Database client
+        graph: Graph client  
+        user_message: Optional user message to trigger response (bypasses normal logic)
+    
     Returns a summary dict of the pulse execution.
     """
-    logger.info(f"=== PULSE START: {agent_id} ===")
+    logger.info(f"=== PULSE START: {agent_id} ===" + (f" [USER MESSAGE]" if user_message else ""))
     
     # 1. Check status
     status = await check_agent_status(agent_id, db, graph)
@@ -222,8 +275,14 @@ async def execute_pulse(
         logger.warning(f"Agent {agent_id} not found")
         return {"action": "ERROR", "details": "Agent not found"}
     
-    # 2. Generate micro-thought
-    action, details = await generate_micro_thought(status)
+    # 2. If user_message present, force ACT mode with message context
+    if user_message:
+        action = "USER_MESSAGE"
+        details = f"User: {user_message}"
+        logger.info(f"User message received: {user_message[:50]}...")
+    else:
+        # Normal micro-thought generation
+        action, details = await generate_micro_thought(status)
     
     # 3. Execute action
     if action == "ACT" and status["pending_count"] > 0:
@@ -248,5 +307,6 @@ async def execute_pulse(
         "action": action,
         "details": details,
         "cycle_id": cycle_id,
-        "timestamp": datetime.utcnow().isoformat(),
+        "thought": details,  # For compatibility with Flutter app expected format
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }

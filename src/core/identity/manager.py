@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any
 
 from src.core.database import DatabaseClient, AgentState
 from src.core.inference.prompts import build_system_prompt
+from src.core.identity.evaluator import ContextEvaluator
+from src.core.llm_client import get_llm_client
 
 logger = logging.getLogger("sovereign.identity.manager")
 
@@ -22,6 +24,21 @@ class IdentityManager:
     
     def __init__(self, db: DatabaseClient):
         self.db = db
+        self.evaluator = ContextEvaluator(get_llm_client())
+
+    async def evaluate_and_sync(self, agent_id: str, current_spirit: str, user_message: str) -> Optional[str]:
+        """
+        Evaluates context and syncs if necessary.
+        Returns the name of the new spirit if a switch occurred, else None.
+        """
+        target_spirit, confidence = await self.evaluator.evaluate(user_message, current_spirit)
+        
+        if target_spirit and target_spirit != current_spirit:
+            logger.info(f"Fluid Persona: Switching '{agent_id}' from {current_spirit} to {target_spirit} (Confidence: {confidence})")
+            await self.sync_agent_identity(agent_id, target_spirit)
+            return target_spirit
+            
+        return None
 
     async def sync_agent_identity(self, agent_id: str, target_spirit_name: str) -> Optional[AgentState]:
         """

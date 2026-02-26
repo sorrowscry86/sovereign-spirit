@@ -68,14 +68,22 @@ def load_config() -> LLMConfigModel:
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         
-        # Expand environment variables in api_key fields
+        # Expand environment variables and VoidKey relay fallback
         if "providers" in data:
+            from src.core.voidkey_client import get_vk_key
             for name, provider in data["providers"].items():
                 if "api_key" in provider and provider["api_key"]:
                     api_key = provider["api_key"]
                     if api_key.startswith("${") and api_key.endswith("}"):
                         env_var = api_key[2:-1]
-                        provider["api_key"] = os.getenv(env_var)
+                        # Try environment first
+                        val = os.getenv(env_var)
+                        if not val:
+                            # Fallback to VoidKey Relay
+                            logger.info(f"Env var {env_var} not found, checking VoidKey Relay...")
+                            val = get_vk_key(env_var)
+                        
+                        provider["api_key"] = val
         
         return LLMConfigModel(**data)
     except Exception as e:

@@ -15,7 +15,7 @@ import asyncio
 import httpx
 import time
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8090"
 DELAY = 3.0  # Seconds between actions for visual effect
 
 async def send_stimuli(client, agent, message):

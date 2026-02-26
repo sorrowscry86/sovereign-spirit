@@ -105,15 +105,33 @@ class DatabaseClient:
             expire_on_commit=False,
         )
         self._initialized = False
+        self._url = database_url # Store original URL for fallback logic
     
     async def initialize(self) -> None:
-        """Verify database connection on startup with localhost fallback."""
+        """Initialize connection pool and verify connectivity."""
         try:
+            self._engine = create_async_engine(
+                self._url,
+                pool_size=DB_POOL_SIZE,
+                max_overflow=DB_POOL_OVERFLOW,
+                pool_timeout=DB_POOL_TIMEOUT,
+                pool_recycle=DB_POOL_RECYCLE,
+                pool_pre_ping=True, # Added this back from original
+                echo=False, # Added this back from original
+            )
+            
+            # Verify connectivity
             async with self._engine.begin() as conn:
-                result = await conn.execute(text("SELECT 1"))
-                result.fetchone()
+                await conn.execute(text("SELECT 1"))
+            
+            self._session_factory = async_sessionmaker(
+                self._engine,
+                expire_on_commit=False,
+                class_=AsyncSession
+            )
             self._initialized = True
-            logger.info("Database connection verified")
+            logger.info("Connected to PostgreSQL")
+            
         except Exception as e:
             # Fallback for host-side execution
             error_msg = str(e).lower()
@@ -126,7 +144,7 @@ class DatabaseClient:
                     local_url = original_url.replace("@postgres:", "@localhost:")
                     
                     # Create temporary engine to test
-                    from sqlalchemy.ext.asyncio import create_async_engine
+                    # from sqlalchemy.ext.asyncio import create_async_engine # REMOVED: Shadows global
                     temp_engine = create_async_engine(local_url)
                     async with temp_engine.begin() as conn:
                         await conn.execute(text("SELECT 1"))
@@ -256,6 +274,19 @@ class DatabaseClient:
                 {"agent_name": agent_id, "mood": mood}
             )
             return result.rowcount > 0
+
+    async def update_agent_designation(self, agent_id: str, designation: str) -> bool:
+        """Update an agent's current designation (Persona)."""
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    UPDATE agents 
+                    SET designation = :designation, last_active_at = NOW()
+                    WHERE LOWER(name) = LOWER(:agent_name)
+                """),
+                {"agent_name": agent_id, "designation": designation}
+            )
+            return result.rowcount > 0
     
     async def touch_agent(self, agent_id: str) -> bool:
         """Update last_active_at timestamp for an agent."""
@@ -369,6 +400,41 @@ class DatabaseClient:
                 }
                 for row in rows
             ]
+
+    async def get_system_logs(
+        self,
+        limit: int = 10,
+        actions: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Get recent heartbeat logs for the entire system."""
+        async with self.session() as session:
+            query = """
+                SELECT h.id, a.name as agent_name, h.action_taken, h.thought_content, h.created_at
+                FROM heartbeat_logs h
+                JOIN agents a ON h.agent_id = a.id
+            """
+            
+            params = {"limit": limit}
+            
+            if actions:
+                query += " WHERE h.action_taken = ANY(:actions)"
+                params["actions"] = actions
+                
+            query += " ORDER BY h.created_at DESC LIMIT :limit"
+            
+            result = await session.execute(text(query), params)
+            rows = result.fetchall()
+            return [
+                {
+                    "id": str(row.id),
+                    "agent_id": row.agent_name,
+                    "action": row.action_taken,
+                    "thought_content": row.thought_content, # Normalized key for API
+                    "trigger": row.action_taken,            # Normalized key for API
+                    "timestamp": row.created_at,
+                }
+                for row in rows
+            ]
     
     # =========================================================================
     # Queued Response Operations
@@ -429,6 +495,8 @@ class DatabaseClient:
                 for row in rows
             ]
     
+
+    
     async def clear_queued_responses(self, agent_id: str) -> int:
         """Mark queued responses as delivered after retrieval."""
         async with self.session() as session:
@@ -443,6 +511,68 @@ class DatabaseClient:
                       AND m.delivered_at IS NULL
                 """),
                 {"agent_name": agent_id}
+            )
+            return result.rowcount
+            
+    # =========================================================================
+    # Stimuli Retrieval Operations (The Ear)
+    # =========================================================================
+
+    async def get_unread_message_count(self, agent_id: str) -> int:
+        """Count unread messages (stimuli) waiting for this agent."""
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    SELECT COUNT(m.id)
+                    FROM agent_messages m
+                    JOIN agents a ON m.to_agent_id = a.id
+                    WHERE LOWER(a.name) = LOWER(:agent_name)
+                      AND m.status = 'received'
+                      AND m.delivered_at IS NULL
+                """),
+                {"agent_name": agent_id}
+            )
+            return result.scalar() or 0
+
+    async def get_recent_stimuli(self, agent_id: str, limit: int = 1) -> List[Dict[str, Any]]:
+        """Get most recent unread messages for an agent."""
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    SELECT m.id, m.content, m.created_at, 'User' as sender_name
+                    FROM agent_messages m
+                    JOIN agents a ON m.to_agent_id = a.id
+                    WHERE LOWER(a.name) = LOWER(:agent_name)
+                      AND m.status = 'received'
+                      AND m.delivered_at IS NULL
+                    ORDER BY m.created_at DESC
+                    LIMIT :limit
+                """),
+                {"agent_name": agent_id, "limit": limit}
+            )
+            rows = result.fetchall()
+            return [
+                {
+                    "id": row.id,
+                    "content": row.content,
+                    "sender": row.sender_name,
+                    "timestamp": row.created_at,
+                }
+                for row in rows
+            ]
+
+    async def mark_stimuli_read(self, message_ids: List[int]) -> int:
+        """Mark specific stimuli messages as processed."""
+        if not message_ids:
+            return 0
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    UPDATE agent_messages
+                    SET status = 'processed', delivered_at = NOW()
+                    WHERE id = ANY(:ids)
+                """),
+                {"ids": message_ids}
             )
             return result.rowcount
 

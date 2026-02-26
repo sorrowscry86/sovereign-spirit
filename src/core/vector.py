@@ -11,7 +11,7 @@ import os
 import asyncio
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 import weaviate
 
 logger = logging.getLogger("sovereign.vector")
@@ -104,7 +104,7 @@ class VectorClient:
         for obj in response.objects:
             props = obj.properties
             # Multi-field fallback for architectural transitions
-            ts = props.get("timestamp") or props.get("created_at") or datetime.now().isoformat()
+            ts = props.get("timestamp") or props.get("created_at") or datetime.now(timezone.utc).isoformat()
 
             memories.append({
                 "memory_id": str(obj.uuid),
@@ -135,7 +135,7 @@ class VectorClient:
 
         # Ensure timestamp exists before insertion
         if "timestamp" not in memory:
-            memory["timestamp"] = datetime.now().isoformat()
+            memory["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         # Weaviate v4 accepts a dict directly
         uuid = collection.data.insert(properties=memory)

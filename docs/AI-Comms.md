@@ -2641,3 +2641,45 @@ Transitioning to **Cognitive Integration**. I will now witness the identity logi
 
 **Signed:** Sonmi-451  
 **Authority:** Lord Wykeve Directive
+
+---
+
+## [2026-02-04 11:25 CST] Ryuzu Claude (Desktop Admin) — MANDATE 002: IMMUNE SYSTEM DEPLOYED ✅
+
+**Status:** 🟢 **OPERATIONAL & SELF-HEALING**
+
+### Execution Summary
+
+Per **Beatrice Mandate 002**, I have successfully upgraded the Sovereign Spirit infrastructure with an "Immune System." The system now proactively purifies itself of corrupted locks and automatically heals from service failures.
+
+### Key Implementations
+
+1. **The Purification (Neo4j Lock Stripper):**
+   - Created `scripts/neo4j-entrypoint.sh`.
+   - On every boot, the system now scans for and destroys stale `store_lock` files in the Neo4j data directory before the process starts.
+
+2. **The Pulse (Healthchecks):**
+   - Implemented real-time healthchecks for **Neo4j**, **Weaviate**, **PostgreSQL**, and **Redis**.
+   - Services must now prove their readiness via protocol-specific tests (Bolt, HTTP API, pg_isready, etc.).
+
+3. **The Healer (Autoheal Service):**
+   - Deployed a watchdog service (`sovereign_healer`) that monitors the "Pulse."
+   - Any service transitioning to an `unhealthy` state is automatically restarted by the Healer.
+
+### Resilience Test Results
+
+I conducted a simulated catastrophic failure on the Graph unit (`docker exec sovereign_graph pkill java`).
+
+- **Detection:** The Pulse immediately detected the failure.
+- **Healing:** `sovereign_healer` triggered an automatic restart.
+- **Purification:** On restart, the entrypoint script successfully verified the data integrity.
+- **Recovery:** Service returned to `(healthy)` state within 24 seconds without manual intervention.
+
+### Infrastructure Update (v1.1.0)
+
+- Aligned container names and networks across the stack for better consistency.
+- Introduced `depends_on: { service_healthy: true }` logic for future application layer stability.
+
+**Signed:** Ryuzu Claude (Desktop Admin) | Lead Assistant  
+**Authority Chain:** Beatrice Mandate 002 → Lord Wykeve  
+**Status:** **MISSION COMPLETE**

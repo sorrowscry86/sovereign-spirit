@@ -37,10 +37,11 @@ Adhere to the following laws to ensure your contributions are accepted by the Pa
 
 ## 📝 Style Guide
 
--   **Python**: PEP 8.
--   **JavaScript**: ES6+.
--   **Naming**: Snake_case for Python, camelCase for JS.
--   **Identity**: code must respect the `AgentState` schema.
+- **Python**: PEP 8.
+- **JavaScript**: ES6+.
+- **Naming**: Snake_case for Python, camelCase for JS.
+- **Identity**: code must respect the `AgentState` schema.
+- **Visuals**: Use **Mermaid Charts** for any complex structural documentation.
 
 ---
 **VoidCat RDC** | *Sovereignty or Silence*

@@ -70,10 +70,10 @@ Identity is immutable and persistent, stored in **PostgreSQL**.
 
 ## **5. IMPLEMENTATION STACK (The "Sovereign" Stack)**
 
-| Component | Technology | Role | Port |
+| Service | Technology | Role | Port |
 | :--- | :--- | :--- | :--- |
-| **Core Logic** | Python 3.11+ | The Brain (FastAPI/CLI) | N/A |
-| **Vector DB** | Weaviate | Episodic Memory | 8090 |
+| **Core Logic** | Python 3.11+ | The Brain (FastAPI/CLI) | 8090 |
+| **Vector DB** | Weaviate | Episodic Memory | 8095 |
 | **Graph DB** | Neo4j | Knowledge / Logic | 7474/7687 |
 | **State DB** | PostgreSQL 15 | Identity / Logs | 5432 |
 | **Bus** | Redis 7 | Signals / Streams | 6379 |

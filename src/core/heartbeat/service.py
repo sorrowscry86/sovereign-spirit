@@ -20,6 +20,8 @@ from src.core.heartbeat.pulse import (
 )
 from src.core.database import DatabaseClient, get_database
 from src.core.graph import GraphClient, get_graph
+from src.core.memory.stasis_chamber import StasisChamber
+from src.core.cache import get_cache
 
 logger = logging.getLogger("sovereign.heartbeat.service")
 
@@ -42,9 +44,12 @@ class HeartbeatService:
         self,
         db: Optional[DatabaseClient] = None,
         graph: Optional[GraphClient] = None,
+        stasis: Optional[StasisChamber] = None,
     ):
         self._db = db or get_database()
         self._graph = graph or get_graph()
+        self._stasis = stasis or StasisChamber()
+        self._cache = get_cache()
         self._running = False
         self._registered_agents: Set[str] = set()
         self._tasks: Dict[str, asyncio.Task] = {}
@@ -93,18 +98,34 @@ class HeartbeatService:
     
     async def stop(self) -> None:
         """
-        Stop the heartbeat service gracefully.
-        
-        Cancels all running pulse loops and waits for cleanup.
+        Stop the heartbeat service and freeze state to stasis.
         """
         if not self._running:
             return
-        
-        logger.info("=== HEARTBEAT SERVICE STOPPING ===")
-        
+            
+        logger.info("Stopping Heartbeat Service...")
         self._running = False
         self._shutdown_event.set()
         
+        # Snapshot current state to Stasis for each agent
+        for agent_id in self._registered_agents:
+            try:
+                # Capture working memory from cache
+                history = await self._cache.get_messages(f"session_{agent_id}", limit=20)
+                focus = await self._cache.get_focus(agent_id)
+                
+                snapshot = {
+                    "agent_id": agent_id,
+                    "working_memory": history,
+                    "current_focus": focus,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                
+                self._stasis.freeze(agent_id, snapshot)
+                logger.info(f"State snapshot frozen for {agent_id} during shutdown.")
+            except Exception as e:
+                logger.error(f"Failed to freeze {agent_id} during shutdown: {e}")
+
         # Cancel chronicler
         if hasattr(self, '_chronicler_task') and not self._chronicler_task.done():
             self._chronicler_task.cancel()
@@ -184,11 +205,39 @@ class HeartbeatService:
         
         # Create pulse loop task
         self._registered_agents.add(agent_id)
+        
+        # Restore state from Stasis if available
+        await self._restore_agent_state(agent_id)
+        
         task = asyncio.create_task(self._pulse_loop(agent_id))
         self._tasks[agent_id] = task
         
         logger.info(f"Registered agent for heartbeat: {agent_id}")
         return True
+
+    async def _restore_agent_state(self, agent_id: str):
+        """Attempts to restore agent working memory and focus from Stasis."""
+        try:
+            ptr_path = f"stasis_tanks/{agent_id}.ptr"
+            snapshot = self._stasis.thaw(ptr_path)
+            
+            if snapshot:
+                logger.info(f"Restoring state for {agent_id} from Stasis...")
+                
+                # Restore to Redis cache
+                if "working_memory" in snapshot:
+                    # Invert list because push_message uses lpush
+                    for msg in reversed(snapshot["working_memory"]):
+                        await self._cache.push_message(f"session_{agent_id}", msg)
+                
+                if "current_focus" in snapshot and snapshot["current_focus"]:
+                    await self._cache.set_focus(agent_id, snapshot["current_focus"])
+                    
+                logger.info(f"State restoration complete for {agent_id}.")
+            else:
+                logger.debug(f"No stasis snapshot found for {agent_id}. Starting fresh.")
+        except Exception as e:
+            logger.error(f"Failed to restore state for {agent_id} from stasis: {e}")
     
     async def unregister_agent(self, agent_id: str) -> bool:
         """
@@ -269,13 +318,17 @@ class HeartbeatService:
     # Manual Trigger
     # =========================================================================
     
-    async def trigger_once(self, agent_id: str) -> dict:
+    async def trigger_once(self, agent_id: str, user_message: Optional[str] = None) -> dict:
         """
         Manually trigger a single heartbeat cycle for an agent.
         
-        This is called by the /agent/{id}/cycle endpoint.
+        This is called by the /agent/{id}/cycle endpoint and /api/messages/send.
+        
+        Args:
+            agent_id: The agent to trigger
+            user_message: Optional user message to inject as context
         """
-        return await execute_pulse(agent_id, self._db, self._graph)
+        return await execute_pulse(agent_id, self._db, self._graph, user_message=user_message)
     
     # =========================================================================
     # Status

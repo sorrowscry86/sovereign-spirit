@@ -13,13 +13,17 @@ It provides:
 """
 
 import os
+import json
+import asyncio
 import logging
 from typing import Any, Dict
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Request, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
 from src.middleware.security import verify_api_key, check_rate_limit
@@ -32,6 +36,7 @@ from src.core.heartbeat import get_heartbeat_service
 from src.core.vector import get_vector_client
 from src.core.cache import get_cache
 from src.core.llm_client import shutdown_llm_client
+from src.core.identity.manager import get_identity_manager
 
 # =============================================================================
 # Configuration
@@ -44,6 +49,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    force=True,
 )
 logger = logging.getLogger("sovereign-middleware")
 
@@ -89,9 +95,43 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Heartbeat initialization failed: {e}")
     
-    logger.info("=== SOVEREIGN SPIRIT MIDDLEWARE ONLINE ===")
+    # Initialize ngrok tunnel for remote access (if enabled)
+    ngrok_tunnel = None
+    ngrok_enabled = os.getenv("NGROK_ENABLED", "false").lower() == "true"
+    if ngrok_enabled:
+        try:
+            from pyngrok import ngrok, conf
+            
+            # Configure ngrok (authtoken from env if available)
+            authtoken = os.getenv("NGROK_AUTHTOKEN")
+            if authtoken:
+                conf.get_default().auth_token = authtoken
+            
+            # Start tunnel on port 8090
+            ngrok_tunnel = ngrok.connect(8090, bind_tls=True)
+            public_url = ngrok_tunnel.public_url
+            
+            logger.info(f"🌐 REMOTE ACCESS ENABLED: {public_url}")
+            logger.info("📱 Use this URL in VoidCat Tether for remote connection")
+            
+            # Save to environment for other components
+            os.environ["VOIDC_PUBLIC_URL"] = public_url
+            
+        except Exception as e:
+            logger.warning(f"ngrok tunnel failed to start: {e}")
+            logger.warning("Remote access unavailable - local network only")
+    
+    logger.info("===SOVEREIGN SPIRIT MIDDLEWARE ONLINE ===")
     
     yield  # Application runs here
+    
+    # Shutdown ngrok tunnel
+    if ngrok_tunnel:
+        try:
+            ngrok.disconnect(ngrok_tunnel.public_url)
+            logger.info("ngrok tunnel closed")
+        except Exception as e:
+            logger.warning(f"ngrok shutdown warning: {e}")
     
     # Stop heartbeat service
     await heartbeat.stop()
@@ -151,6 +191,7 @@ app = FastAPI(
     license_info={
         "name": "MIT",
     },
+    dependencies=[Depends(verify_api_key)],
 )
 
 # =============================================================================
@@ -184,20 +225,92 @@ async def security_middleware(request: Request, call_next):
     # Check rate limit first
     await check_rate_limit(request)
 
-    # Verify API key (if enabled)
-    await verify_api_key(request)
-
     # Proceed with request
     response = await call_next(request)
     return response
 
 
-# Mount routers
-app.include_router(agents_router)
-
 # =============================================================================
 # Core Endpoints
 # =============================================================================
+
+from pydantic import BaseModel
+from typing import List, Optional
+
+class LogEntry(BaseModel):
+    timestamp: datetime
+    agent_id: str
+    thought_content: Optional[str] = None
+    trigger: str
+
+class LogResponse(BaseModel):
+    logs: List[LogEntry]
+    count: int
+
+class PulseRequest(BaseModel):
+    agent_id: Optional[str] = None
+    action: str = "MUSE"
+
+# =============================================================================
+# API Routers
+# =============================================================================
+
+# Import and register API routers
+from src.api import messages
+app.include_router(messages.router)
+
+# =============================================================================
+# Inline API Endpoints (Legacy - to be migrated to routers)
+# =============================================================================
+
+@app.get("/api/logs/thoughts", response_model=LogResponse)
+async def get_system_thoughts(limit: int = 50):
+    """
+    Get recent system-wide thoughts/logs.
+    Used by the Scrying Glass dashboard and Mobile Tether.
+    """
+    db = get_database()
+    # Filter for interesting actions
+    logs = await db.get_system_logs(limit=limit, actions=["MUSE", "TASK", "ACT", "SLEEP"])
+    
+    return LogResponse(
+        logs=[
+            LogEntry(
+                timestamp=log["timestamp"],
+                agent_id=log["agent_id"],
+                thought_content=log.get("thought_content") or log.get("details"),
+                trigger=log.get("trigger") or log.get("action")
+            ) for log in logs
+        ],
+        count=len(logs)
+    )
+
+@app.post("/api/pulse/trigger")
+async def trigger_pulse(request: PulseRequest):
+    """
+    Trigger a manual pulse (MUSE/ACT cycle).
+    If agent_id is provided, triggers that agent.
+    If not, triggers a system-wide pulse for all active agents.
+    """
+    service = get_heartbeat_service()
+    triggered = []
+    
+    if request.agent_id:
+        # Target specific
+        await service.trigger_once(request.agent_id)
+        triggered.append(request.agent_id)
+    else:
+        # Global pulse
+        for agent_id in service.registered_agents:
+            await service.trigger_once(agent_id)
+            triggered.append(agent_id)
+            
+    return {
+        "status": "triggered",
+        "action": request.action,
+        "agents": triggered,
+        "timestamp": datetime.now(timezone.utc)
+    }
 
 @app.get("/health")
 async def health_check():
@@ -229,19 +342,137 @@ app.include_router(graph_router)
 app.include_router(config_router)
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """Real-time nervous system connection."""
+@app.websocket("/ws/dashboard")
+async def websocket_dashboard(websocket: WebSocket):
+    """
+    Real-time connection for The Throne (Dashboard 2.0).
+    Broadcasts Spirit State, Logs, and Heartbeat events.
+    """
     manager = get_connection_manager()
     await manager.connect(websocket)
+    
+    db_client = get_database()
+    identity_mgr = get_identity_manager(db_client)
+    heartbeat = get_heartbeat_service()
+    
+    # Construction of "Throne" Protocol
     try:
+        # Construct initial state packet (fetch real data)
+        agents = await db_client.list_agents()
+        if agents:
+            vessel = agents[0]  # default to first agent for now
+            initial_state = {
+                "type": "STATE_UPDATE",
+                "payload": {
+                    "identity": {
+                        "name": vessel.name, 
+                        "persona": vessel.designation, 
+                        "voice_active": False
+                    },
+                    "mind": {
+                        "mood": vessel.current_mood, 
+                        "active_thought": "Observing Throne connection...", 
+                        "current_goal": "System Standby", 
+                        "attention_focus": "Dashboard"
+                    },
+                    "stats": {
+                        "memory_usage": 0, 
+                        "uptime": (datetime.now(timezone.utc) - vessel.created_at).total_seconds() if vessel.created_at else 0, 
+                        "heartbeat_latency": 0
+                    }
+                }
+            }
+            await websocket.send_json(initial_state)
+        
+        async def broadcast_updates():
+            """Background loop to broadcast state updates to the connected dashboard."""
+            last_ping = datetime.now(timezone.utc)
+            try:
+                while True:
+                    # Fetch fresh state
+                    agents = await db_client.list_agents()
+                    if agents:
+                        vessel = agents[0]
+                        update = {
+                            "type": "STATE_UPDATE",
+                            "payload": {
+                                "identity": {
+                                    "name": vessel.name,
+                                    "persona": vessel.designation,
+                                    "voice_active": False
+                                },
+                                "mind": {
+                                    "mood": vessel.current_mood,
+                                    "active_thought": "Synchronized with Throne",
+                                    "current_goal": "Awaiting Command",
+                                    "attention_focus": "Master"
+                                },
+                                "stats": {
+                                    "uptime": (datetime.now(timezone.utc) - vessel.created_at).total_seconds() if vessel.created_at else 0,
+                                }
+                            }
+                        }
+                        await websocket.send_json(update)
+                    
+                    # Sleep before next update (keep it mellow, 2 seconds)
+                    await asyncio.sleep(2)
+            except Exception as e:
+                logger.debug(f"Broadcast loop stopped: {e}")
+
+        # Start the broadcast loop in the background
+        update_task = asyncio.create_task(broadcast_updates())
+        
         while True:
-            # Keep alive / listen for ping
-            data = await websocket.receive_text()
-            # Echo back for latency checks
-            await websocket.send_text(f"echo: {data}")
+            # Keep alive and listen for "God Mode" commands
+            data_str = await websocket.receive_text()
+            try:
+                data = json.loads(data_str)
+                cmd_type = data.get("type")
+                payload = data.get("payload", {})
+                
+                logger.info(f"Dashboard command received: {cmd_type}")
+                
+                if cmd_type == "GOD_SYNC":
+                    agent_id = payload.get("agent_id", "sovereign-001")
+                    target = payload.get("spirit")
+                    if target:
+                        await identity_mgr.sync_agent_identity(agent_id, target)
+                        logger.info(f"GOD_SYNC: {agent_id} synced to {target}")
+                
+                elif cmd_type == "GOD_MOOD":
+                    agent_id = payload.get("agent_id", "sovereign-001")
+                    mood = payload.get("mood")
+                    if mood:
+                        await db_client.update_agent_mood(agent_id, mood)
+                        logger.info(f"GOD_MOOD: {agent_id} moved to {mood}")
+
+                elif cmd_type == "GOD_STIMULI":
+                    agent_id = payload.get("agent_id", "sovereign-001")
+                    content = payload.get("content")
+                    if content:
+                        from src.core.database import StimuliRecord
+                        await db_client.record_stimuli(StimuliRecord(agent_id=agent_id, content=content, source="god_mode"))
+                        # Trigger pulse immediately
+                        await heartbeat.trigger_once(agent_id)
+                        logger.info(f"GOD_STIMULI: Injected to {agent_id}")
+
+                # Echo back success or simple acknowledgement
+                await websocket.send_json({"type": "CMD_ACK", "status": "processed", "cmd": cmd_type})
+                
+            except json.JSONDecodeError:
+                await websocket.send_text(f"Invalid JSON received: {data_str}")
+            except Exception as e:
+                logger.error(f"Error processing command {data_str}: {e}")
+                await websocket.send_json({"type": "CMD_ACK", "status": "failed", "error": str(e)})
+            
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"Dashboard WebSocket error: {e}")
+        manager.disconnect(websocket)
+    finally:
+        if 'update_task' in locals():
+            update_task.cancel()
 
 
 @app.post("/v1/graphql")
@@ -334,10 +565,31 @@ def sanitize_weaviate_response(data: Dict[str, Any], agent_id: str) -> Dict[str,
 
 
 # =============================================================================
-# Entry Point
+# Static Files (The Throne)
 # =============================================================================
+
+# Ensure static directory exists
+# Use absolute path to avoid CWD issues
+static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "static"))
+if not os.path.exists(static_dir):
+    logger.warning(f"Static dir not found at {static_dir}, creating it")
+    os.makedirs(static_dir)
+
+# Mount the static directory to serve the Flutter Web app
+# This must be mounted AFTER all API routes to avoid conflicts
+# explicit root handler to ensure index.html is served
+from fastapi.responses import FileResponse
+
+@app.get("/")
+async def serve_dashboard():
+    index_path = os.path.join(static_dir, "index.html")
+    if not os.path.exists(index_path):
+        raise HTTPException(status_code=404, detail="Index not found")
+    return FileResponse(index_path)
+
+app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8090)
 

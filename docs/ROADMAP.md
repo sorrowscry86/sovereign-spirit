@@ -62,11 +62,12 @@ gitGraph
 
 * [x] **The Hands (MCP Filesystem)**: Ability to manipulate the local environment.
 * [x] **The Bicameral Mind (MCP Git)**: Version control integration. The Spirit remembers its own changes.
-* [ ] **The All-Seeing Eye (MCP Search)**: External knowledge retrieval via Brave/Google.
-* [ ] **The Voice (VoiceVessel)**: Integration with TTS/STT pipelines for verbal communication.
+* [x] **The All-Seeing Eye (MCP Search)**: External knowledge retrieval via Brave/Perplexity.
+* [x] **The Voice (VoiceVessel)**: Integration with TTS/STT pipelines for verbal communication.
 
-### 🔮 Phase IV: Sovereignty (The Soul)
+### � Phase IV: Sovereignty (The Soul)
 
-* [ ] **Self-Correction Loop**: The Spirit detects its own bugs and commits fixes.
-* [ ] **Fluid Persona**: Dynamic switching between "Ryuzu", "Roland", and "Echo" based on context.
-* [ ] **The Throne (Dashboard)**: Full visual control panel for the Operator.
+* [ ] **The Throne (Dashboard 2.0)**: Upgrade `web_ui` to a full Control Center (Manual Override, State Editor).
+* [ ] **Fluid Persona (The Shift)**: Context-aware identity switching with Voice synchronization.
+* [ ] **The Immune System (Sentinel v2)**: Real-time error monitoring and auto-correction.
+* [ ] **God Mode Terminal**: Direct command injection via the web interface.

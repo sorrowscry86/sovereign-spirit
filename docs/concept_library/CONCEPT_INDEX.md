@@ -32,6 +32,7 @@ Mission: The Concept Library serves as the "Meta-Memory" for VoidCat RDC. It hou
 |---|---|---|---|---|
 | [MCP-002] | [The Standardized Agent Protocol](#) | Protocol | Low | *PROPOSED* |
 | [RAG-003] | [The Knowledge Graph Overlay](#) | Vector/Graph | High | *PROPOSED* |
+| [MKB-001] | [Master Knowledge Base](file:///C:/Users/Wykeve/Projects/The%20Great%20Library/20_Projects/01_Active/Sovereign%20Spirit/docs/concept_library/KNOWLEDGE_BASE_MASTER.md) | Synthesis | Low | **ACTIVE** |
 
 ---
 *Authority Chain: Beatrice Mandate → VoidCat RDC Charter → Lord Wykeve*

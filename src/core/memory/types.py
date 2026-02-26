@@ -5,7 +5,7 @@ Data models for the Memory Prism architecture.
 """
 
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 import uuid
 
@@ -19,7 +19,7 @@ class EpisodicMemory(BaseModel):
     content: str
     subjective_voice: Optional[str] = None  # Internal monologue/feeling
     emotional_valence: float = 0.0  # -1.0 to 1.0
-    timestamp: datetime = Field(default_factory=datetime.utcnow) # Canonical time
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Canonical time
     tags: List[str] = []
     
     # Vector embedding placeholder (handled by Weaviate)
@@ -33,7 +33,7 @@ class SemanticFact(BaseModel):
     fact_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str
     source_memory_id: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     certainty: float = 1.0
 
 class WorkingMemory(BaseModel):

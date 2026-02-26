@@ -74,23 +74,19 @@ class GraphClient:
         self._initialized = False
     
     async def initialize(self) -> None:
-        """Initialize the Neo4j driver and verify connection with localhost fallback."""
+        """Initialize Neo4j driver and verify connectivity."""
         try:
             self._driver = AsyncGraphDatabase.driver(
                 self._uri,
                 auth=(self._user, self._password),
             )
             # Verify connectivity
-            async with self._driver.session() as session:
-                result = await session.run("RETURN 1 as status")
-                await result.single()
+            await self._driver.verify_connectivity()
             self._initialized = True
-            logger.info("Neo4j connection verified")
-            
-            # Initialize Schema after successful docker-side connection
+            logger.info(f"Connected to Neo4j at {self._uri}")
+            # Initialize Schema after successful connection
             await self._initialize_schema()
         except Exception as e:
-            # Fallback for host-side execution
             error_msg = str(e).lower()
             if ("getaddrinfo failed" in error_msg or "failed to dns resolve" in error_msg) and "localhost" not in self._uri:
                 logger.warning("Neo4j connection failed for Docker host, trying localhost fallback...")

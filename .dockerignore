@@ -1,0 +1,111 @@
+# .dockerignore - Reduce build context and image bloat
+# Generated: 2024 (Docker optimization pass)
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Version Control
+.svn
+.hg
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.circleci
+jenkins
+
+# Documentation
+*.md
+docs/
+README*
+CHANGELOG*
+LICENSE*
+CONTRIBUTING*
+
+# Development
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+.env.local
+.env.*.local
+
+# Node/npm
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+.venv
+venv/
+ENV/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Testing
+test/
+tests/
+.pytest/
+*.test.js
+coverage/
+
+# Build artifacts
+*.o
+*.a
+*.so
+dist/
+build/
+
+# IDE/Editor
+*.sublime-project
+*.sublime-workspace
+.vscode/
+.idea/
+*.code-workspace
+
+# OS specific
+Thumbs.db
+*.bak
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp

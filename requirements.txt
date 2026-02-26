@@ -9,3 +9,6 @@ weaviate-client
 redis
 neo4j
 python-dotenv
+mcp
+websockets
+pyyaml

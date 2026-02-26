@@ -34,8 +34,21 @@ RATE_LIMIT_ENABLED = os.getenv("SOVEREIGN_RATE_LIMIT_ENABLED", "true").lower() =
 RATE_LIMIT_REQUESTS = int(os.getenv("SOVEREIGN_RATE_LIMIT_REQUESTS", "60"))  # requests per window
 RATE_LIMIT_WINDOW = int(os.getenv("SOVEREIGN_RATE_LIMIT_WINDOW", "60"))  # window in seconds
 
-# Exempt paths from authentication (health checks, docs)
-AUTH_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+# Exempt paths from authentication (health checks, docs, dashboard)
+AUTH_EXEMPT_PATHS = {
+    "/health", 
+    "/docs", 
+    "/openapi.json", 
+    "/redoc",
+    "/",
+    "/index.html",
+    "/manifest.json",
+    "/favicon.ico",
+    "/main.dart.js",
+    "/flutter.js",
+    "/flutter_bootstrap.js",
+    "/flutter_service_worker.js"
+}
 
 # =============================================================================
 # API Key Authentication
@@ -54,12 +67,13 @@ async def verify_api_key(
     Returns the API key if valid, raises HTTPException if invalid.
     Allows unauthenticated access if API_KEY_ENABLED is False.
     """
-    # Skip auth for exempt paths
-    if request.url.path in AUTH_EXEMPT_PATHS:
-        return None
+    path = request.url.path
 
-    # Skip auth for WebSocket upgrade requests
-    if request.url.path == "/ws":
+    # Only enforce authentication on specific API routes
+    # Everything else (static files, docs, health) is public
+    protected_prefixes = ("/api", "/agent")
+    
+    if not path.startswith(protected_prefixes):
         return None
 
     # If API key auth is disabled, allow all requests
