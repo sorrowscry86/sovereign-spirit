@@ -14,6 +14,8 @@ import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 
+from sqlalchemy import text as sa_text
+
 from src.core.memory.types import EpisodicMemory, PrismContext, WorkingMemory
 from src.core.vector import get_vector_client
 from src.core.graph import get_graph
@@ -189,8 +191,6 @@ class PrismEngine:
             List of memory dicts with keys: id, agent_id, content, type, timestamp,
             emotional_valence.
         """
-        from sqlalchemy import text as sa_text
-
         db = get_database()
         limit = max(1, min(limit, 100))
 

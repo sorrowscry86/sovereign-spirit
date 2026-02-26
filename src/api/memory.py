@@ -13,11 +13,10 @@ GET /api/memory/
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from src.core.memory.prism import get_prism
-from src.middleware.security import verify_api_key
 
 logger = logging.getLogger("sovereign.api.memory")
 
@@ -60,7 +59,6 @@ class MemoryListResponse(BaseModel):
         "Query episodic memories from the memory_events table. "
         "Filter by agent_id, memory type, or a search term."
     ),
-    dependencies=[Depends(verify_api_key)],
 )
 async def list_memories(
     agent_id: Optional[str] = Query(
