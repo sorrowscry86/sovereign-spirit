@@ -31,17 +31,22 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "voidcat_sovereign")
 # Pydantic Models
 # =============================================================================
 
+
 class TaskNode(BaseModel):
     """Represents a task in the knowledge graph."""
+
     task_id: str
     description: str
     priority: int = 0
     status: str = "pending"
     created_at: Optional[datetime] = None
+    project_id: Optional[str] = None  # links task to a parent project
+    assigned_agent_id: Optional[str] = None  # enables cross-agent handoff
 
 
 class AgentNode(BaseModel):
     """Represents an agent in the knowledge graph."""
+
     agent_id: str
     name: str
     designation: str
@@ -51,16 +56,17 @@ class AgentNode(BaseModel):
 # Graph Client
 # =============================================================================
 
+
 class GraphClient:
     """
     Async Neo4j client for Sovereign Spirit knowledge graph operations.
-    
+
     Provides methods for:
     - Task node creation and management
     - Agent-Task relationship tracking
     - Causal chain queries
     """
-    
+
     def __init__(
         self,
         uri: str = NEO4J_URI,
@@ -72,7 +78,7 @@ class GraphClient:
         self._password = password
         self._driver: Optional[AsyncDriver] = None
         self._initialized = False
-    
+
     async def initialize(self) -> None:
         """Initialize Neo4j driver and verify connectivity."""
         try:
@@ -88,13 +94,18 @@ class GraphClient:
             await self._initialize_schema()
         except Exception as e:
             error_msg = str(e).lower()
-            if ("getaddrinfo failed" in error_msg or "failed to dns resolve" in error_msg) and "localhost" not in self._uri:
-                logger.warning("Neo4j connection failed for Docker host, trying localhost fallback...")
+            if (
+                "getaddrinfo failed" in error_msg
+                or "failed to dns resolve" in error_msg
+            ) and "localhost" not in self._uri:
+                logger.warning(
+                    "Neo4j connection failed for Docker host, trying localhost fallback..."
+                )
                 try:
                     # Explicitly close the defunct driver to prevent ResourceWarnings
                     if self._driver:
                         await self._driver.close()
-                    
+
                     # Force bolt:// scheme for localhost to avoid routing issues
                     local_uri = "bolt://localhost:7687"
                     self._driver = AsyncGraphDatabase.driver(
@@ -107,27 +118,28 @@ class GraphClient:
                     self._initialized = True
                     self._uri = local_uri
                     logger.info("Neo4j connection verified via localhost")
-                    
+
                     # Initialize Schema after connection
                     await self._initialize_schema()
                     return
                 except Exception as fallback_e:
                     logger.error(f"Neo4j localhost fallback also failed: {fallback_e}")
-            
+
             # If not a DNS error or fallback failed, re-raise
             raise e
-    
+
     async def close(self) -> None:
         """Close the Neo4j driver."""
         if self._driver:
             await self._driver.close()
-            self._driver = None # Clear reference
+            self._driver = None  # Clear reference
         logger.info("Neo4j connection closed")
 
     async def _initialize_schema(self):
         """Create necessary labels and constraints in the Graph."""
-        if not self._driver: return
-        
+        if not self._driver:
+            return
+
         logger.info("Bootstrapping Neo4j Schema...")
         async with self._driver.session() as session:
             # Create indexing/constraints for faster retrieval and data integrity
@@ -139,24 +151,26 @@ class GraphClient:
                 # Ensure initial data markers exist to avoid label-not-found errors on empty DB
                 "MERGE (a:Agent {agent_id: '__SYSTEM__'}) SET a.name='System Core', a.designation='Initialization Marker'",
                 "MERGE (t:Task {task_id: '__INIT__'}) SET t.description='Schema Initialization', t.status='init', t.priority=0, t.created_at=datetime()",
-                "MATCH (a:Agent {agent_id: '__SYSTEM__'}), (t:Task {task_id: '__INIT__'}) MERGE (t)-[:HAS_PRIORITY]->(a)"
+                "MATCH (a:Agent {agent_id: '__SYSTEM__'}), (t:Task {task_id: '__INIT__'}) MERGE (t)-[:HAS_PRIORITY]->(a)",
             ]
             for q in queries:
                 try:
                     await session.run(q)
                 except Exception as e:
-                    logger.warning(f"Schema init query failed (possibly already exists): {e}")
+                    logger.warning(
+                        f"Schema init query failed (possibly already exists): {e}"
+                    )
         logger.info("Neo4j Schema Bootstrapped.")
-    
+
     # =========================================================================
     # Agent Operations
     # =========================================================================
-    
+
     async def ensure_agent_node(self, agent: AgentNode) -> bool:
         """Create or update an agent node in the graph."""
         if not self._driver:
             raise RuntimeError("GraphClient not initialized")
-        
+
         async with self._driver.session() as session:
             result = await session.run(
                 """
@@ -172,11 +186,11 @@ class GraphClient:
             )
             record = await result.single()
             return record is not None
-    
+
     # =========================================================================
     # Task Operations
     # =========================================================================
-    
+
     async def create_task(
         self,
         task: TaskNode,
@@ -185,7 +199,7 @@ class GraphClient:
         """Create a task node and link it to an agent with HAS_PRIORITY."""
         if not self._driver:
             raise RuntimeError("GraphClient not initialized")
-        
+
         async with self._driver.session() as session:
             result = await session.run(
                 """
@@ -213,7 +227,7 @@ class GraphClient:
             else:
                 logger.warning(f"Agent {agent_id} not found in graph")
                 return ""
-    
+
     async def get_agent_tasks(
         self,
         agent_id: str,
@@ -222,7 +236,7 @@ class GraphClient:
         """Get all tasks associated with an agent."""
         if not self._driver:
             raise RuntimeError("GraphClient not initialized")
-        
+
         query = """
             MATCH (t:Task)-[:HAS_PRIORITY]->(a:Agent {agent_id: $agent_id})
         """
@@ -236,12 +250,12 @@ class GraphClient:
                    t.created_at as created_at
             ORDER BY t.priority DESC, t.created_at ASC
         """
-        
+
         async with self._driver.session() as session:
             result = await session.run(query, agent_id=agent_id, status=status)
             records = await result.data()
             return records
-    
+
     async def update_task_status(
         self,
         task_id: str,
@@ -250,7 +264,7 @@ class GraphClient:
         """Update the status of a task."""
         if not self._driver:
             raise RuntimeError("GraphClient not initialized")
-        
+
         async with self._driver.session() as session:
             result = await session.run(
                 """
@@ -264,20 +278,20 @@ class GraphClient:
             )
             record = await result.single()
             return record is not None
-    
+
     async def complete_task(self, task_id: str) -> bool:
         """Mark a task as completed."""
         return await self.update_task_status(task_id, "completed")
-    
+
     # =========================================================================
     # Query Operations
     # =========================================================================
-    
+
     async def get_pending_tasks_count(self, agent_id: str) -> int:
         """Count pending tasks for an agent."""
         if not self._driver:
             raise RuntimeError("GraphClient not initialized")
-        
+
         async with self._driver.session() as session:
             result = await session.run(
                 """
@@ -288,7 +302,7 @@ class GraphClient:
             )
             record = await result.single()
             return record["count"] if record else 0
-    
+
     async def health_check(self) -> bool:
         """Verify Neo4j connectivity."""
         if not self._driver:
