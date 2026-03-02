@@ -40,6 +40,7 @@ from src.api.graph import router as graph_router
 from src.api.config import router as config_router
 from src.api.memory import router as memory_router
 from src.api.stasis import router as stasis_router
+from src.api.projects import router as projects_router
 from src.core.database import get_database, StimuliRecord
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
@@ -404,6 +405,7 @@ app.include_router(graph_router)
 app.include_router(config_router)
 app.include_router(memory_router)
 app.include_router(stasis_router)
+app.include_router(projects_router)
 
 
 @app.websocket("/ws/dashboard")

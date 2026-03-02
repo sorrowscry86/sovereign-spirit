@@ -303,6 +303,22 @@ class GraphClient:
             record = await result.single()
             return record["count"] if record else 0
 
+    async def get_tasks_for_project(self, project_id: str) -> List[Dict[str, Any]]:
+        """Return all tasks linked to a project_id."""
+        if not self._driver:
+            return []
+        async with self._driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (t:Task {project_id: $project_id})
+                RETURN t.task_id as task_id, t.description as description,
+                       t.status as status, t.assigned_agent_id as assigned_agent_id
+                ORDER BY t.created_at ASC
+                """,
+                project_id=project_id,
+            )
+            return [dict(record) async for record in result]
+
     async def health_check(self) -> bool:
         """Verify Neo4j connectivity."""
         if not self._driver:
