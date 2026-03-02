@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from src.core.database import DatabaseClient, QueuedResponse
+from src.core.database import DatabaseClient, QueuedResponse, get_database
 from src.core.graph import GraphClient, TaskNode
 from src.core.llm_client import get_llm_client, ChatMessage
 from src.mcp.client import get_mcp_manager
@@ -56,14 +56,19 @@ Pending Tasks: {pending_tasks}
 Unread Messages: {unread_count}
 Last Message: "{last_message}"
 
+[ACTIVE PROJECT]
+{project_context}
+
 Evaluate your current state. Reply ONLY with one of:
 - SLEEP (if no action needed)
 - ACT: [Brief task description] (if action required)
+- PONDER (if idle and feel like reflecting, exploring, or connecting)
 
 Decision rules (follow exactly):
-- Reply ACT only if Pending Tasks > 0.
+- Reply ACT only if Pending Tasks > 0, or Active Project requires next step.
+- Reply PONDER approximately 40% of idle cycles when no tasks are pending.
+- Reply SLEEP otherwise.
 - Unread messages alone do NOT trigger ACT — they are informational only.
-- If Pending Tasks == 0, reply SLEEP regardless of unread message count.
 
 Keep response under 20 words."""
 
@@ -159,6 +164,13 @@ async def check_agent_status(
     if pending_count > 0 or unread_count > 0:
         status_str = f"{pending_count} tasks, {unread_count} msgs"
 
+    # Fetch active project for this agent
+    db_client = get_database()
+    try:
+        active_project = await db_client.get_active_project_for_agent(agent_id)
+    except Exception:
+        active_project = None
+
     return {
         "exists": True,
         "agent_id": agent.agent_id,
@@ -173,6 +185,7 @@ async def check_agent_status(
             f"{last_message} (from {sender})" if unread_count > 0 else "None"
         ),
         "status": status_str,
+        "active_project": active_project,
     }
 
 
@@ -185,7 +198,17 @@ async def generate_micro_thought(
     Returns tuple of (action, details):
     - ("SLEEP", None) if no action needed
     - ("ACT", "task description") if action required
+    - ("PONDER", None) if idle and model chooses to ponder
     """
+    active_project = agent_status.get("active_project")
+    if active_project:
+        project_context = (
+            f"Title: {active_project['title']}\n"
+            f"Last progress: {active_project['progress_notes'][-200:] or 'None yet'}"
+        )
+    else:
+        project_context = "No active project."
+
     prompt = MICRO_THOUGHT_PROMPT.format(
         agent_name=agent_status["name"],
         designation=agent_status["designation"],
@@ -194,6 +217,7 @@ async def generate_micro_thought(
         pending_tasks=agent_status["pending_count"],
         unread_count=agent_status.get("unread_count", 0),
         last_message=agent_status.get("last_message", "None"),
+        project_context=project_context,
     )
 
     try:
@@ -225,6 +249,8 @@ async def generate_micro_thought(
         elif result.upper().startswith("ACT:"):
             task = result[4:].strip()
             return ("ACT", task)
+        elif result.upper().startswith("PONDER"):
+            return ("PONDER", None)
         else:
             # Ambiguous or truncated response — default to SLEEP
             logger.warning(
