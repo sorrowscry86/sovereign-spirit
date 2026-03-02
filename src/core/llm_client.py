@@ -25,8 +25,10 @@ logger = logging.getLogger("sovereign.llm")
 # Provider Types
 # =============================================================================
 
+
 class ProviderType(str, Enum):
     """Supported LLM provider types."""
+
     OLLAMA = "ollama"
     LM_STUDIO = "lm_studio"
     OPENROUTER = "openrouter"
@@ -36,6 +38,7 @@ class ProviderType(str, Enum):
 @dataclass
 class ProviderConfig:
     """Configuration for an LLM provider."""
+
     name: str
     provider_type: ProviderType
     endpoint: str
@@ -84,14 +87,17 @@ DEFAULT_PROVIDERS: Dict[str, ProviderConfig] = {
 # Request/Response Models
 # =============================================================================
 
+
 class ChatMessage(BaseModel):
     """A single chat message."""
+
     role: str = Field(..., pattern="^(system|user|assistant)$")
     content: str
 
 
 class CompletionRequest(BaseModel):
     """Request for chat completion."""
+
     messages: List[ChatMessage]
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
@@ -100,24 +106,27 @@ class CompletionRequest(BaseModel):
 
 class CompletionResponse(BaseModel):
     """Response from chat completion."""
+
     content: str
     model: str
     provider: str
     tokens_used: Optional[int] = None
     finish_reason: Optional[str] = None
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # =============================================================================
 # Unified LLM Client
 # =============================================================================
 
+
 class LLMClient:
     """
     Unified async client for OpenAI-compatible LLM providers.
-    
+
     Supports automatic fallback between providers when one fails.
     """
-    
+
     def __init__(
         self,
         providers: Optional[Dict[str, ProviderConfig]] = None,
@@ -126,7 +135,11 @@ class LLMClient:
     ):
         self.providers = providers or DEFAULT_PROVIDERS.copy()
         self.active_provider = active_provider
-        self.fallback_chain = fallback_chain or ["ollama_local", "lm_studio", "openrouter"]
+        self.fallback_chain = fallback_chain or [
+            "ollama_local",
+            "lm_studio",
+            "openrouter",
+        ]
         self.inference_mode: str = "AUTO"
         self.current_route: str = "LOCAL"
         self._client = httpx.AsyncClient(timeout=60.0)
@@ -138,30 +151,30 @@ class LLMClient:
         elif provider_type in [ProviderType.OPENROUTER, ProviderType.OPENAI]:
             return "[BIFROST: CLOUD]"
         return "[BIFROST: LOCAL]"
-    
+
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._client.aclose()
-    
+
     def get_provider(self, name: Optional[str] = None) -> ProviderConfig:
         """Get provider configuration by name."""
         provider_name = name or self.active_provider
         if provider_name not in self.providers:
             raise ValueError(f"Unknown provider: {provider_name}")
         return self.providers[provider_name]
-    
+
     def set_active_provider(self, name: str) -> None:
         """Set the active provider."""
         if name not in self.providers:
             raise ValueError(f"Unknown provider: {name}")
         self.active_provider = name
         logger.info(f"Active LLM provider set to: {name}")
-    
+
     def add_provider(self, config: ProviderConfig) -> None:
         """Add or update a provider configuration."""
         self.providers[config.name] = config
         logger.info(f"Provider added/updated: {config.name}")
-    
+
     async def health_check(self, provider_name: Optional[str] = None) -> bool:
         """Check if a provider is available."""
         config = self.get_provider(provider_name)
@@ -174,7 +187,7 @@ class LLMClient:
         except Exception as e:
             logger.debug(f"Health check failed for {config.name}: {e}")
             return False
-    
+
     async def complete(
         self,
         messages: List[ChatMessage],
@@ -183,6 +196,7 @@ class LLMClient:
         provider_name: Optional[str] = None,
         use_fallback: bool = True,
         complexity: str = "direct",  # direct | reasoning
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> CompletionResponse:
         """
         Generate a chat completion with Bifrost Dynamic Routing.
@@ -193,12 +207,12 @@ class LLMClient:
             allowed_types = [ProviderType.OLLAMA, ProviderType.LM_STUDIO]
         elif self.inference_mode == "CLOUD":
             allowed_types = [ProviderType.OPENROUTER, ProviderType.OPENAI]
-        else: # AUTO
+        else:  # AUTO
             allowed_types = [t for t in ProviderType]
 
         # Bifrost Routing Logic
         providers_to_try = []
-        
+
         if provider_name:
             # Explicit override
             providers_to_try = [provider_name]
@@ -212,23 +226,28 @@ class LLMClient:
                 providers_to_try = ["ollama_local", "lm_studio", "openrouter"]
         else:
             # Standard fallback chain filtered by mode
-            chain = [self.active_provider] + [p for p in self.fallback_chain if p != self.active_provider]
+            chain = [self.active_provider] + [
+                p for p in self.fallback_chain if p != self.active_provider
+            ]
             providers_to_try = chain
 
         # Filter by allowed Bifrost types and existence
         providers_to_try = [
-            p for p in providers_to_try 
+            p
+            for p in providers_to_try
             if p in self.providers and self.providers[p].provider_type in allowed_types
         ]
-        
+
         if not providers_to_try:
-            raise RuntimeError(f"No providers available for inference mode: {self.inference_mode}")
+            raise RuntimeError(
+                f"No providers available for inference mode: {self.inference_mode}"
+            )
 
         last_error = None
         for p_name in providers_to_try:
             try:
                 return await self._complete_with_provider(
-                    p_name, messages, max_tokens, temperature, complexity
+                    p_name, messages, max_tokens, temperature, complexity, tools
                 )
             except Exception as e:
                 logger.warning(f"Provider {p_name} failed: {e}")
@@ -238,10 +257,11 @@ class LLMClient:
                     # If local failed, we might want to mark current route as CLOUD
                     # However, that logic belongs in a more complex router.py
                     pass
-        
-        raise RuntimeError(f"All providers failed for mode {self.inference_mode}. Last error: {last_error}")
 
-    
+        raise RuntimeError(
+            f"All providers failed for mode {self.inference_mode}. Last error: {last_error}"
+        )
+
     async def _complete_with_provider(
         self,
         provider_name: str,
@@ -249,112 +269,124 @@ class LLMClient:
         max_tokens: Optional[int],
         temperature: Optional[float],
         complexity: str = "direct",
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> CompletionResponse:
         """Execute completion with a specific provider."""
         config = self.get_provider(provider_name)
-        
+
         # ---------------------------------------------------------------------
         # LM Studio SDK Integration
         # ---------------------------------------------------------------------
-        if config.provider_type == ProviderType.LM_STUDIO:
+        if config.provider_type == ProviderType.LM_STUDIO and not tools:
+            # SDK path — skipped when tools are requested (SDK doesn't support function calling)
             try:
                 import lmstudio as lms
             except ImportError:
-                raise ImportError("lmstudio SDK not installed. Run `pip install lmstudio`.")
+                lms = None
 
-            # Clean endpoint for SDK (remove /v1 if present, though SDK might handle it)
-            # SDK expects "ws://localhost:1234" or "http://localhost:1234"
-            # Our config.endpoint usually has "/v1" appended.
-            base_url = config.endpoint.replace("/v1", "")
-            
-            # Determine Model ID based on Complexity
-            # TODO: externalize these model IDs to env vars or config
-            target_model_id = config.model # Default to "auto"
-            
-            if complexity == "reasoning":
-                # Try to find a reasoning model (Qwen)
-                target_model_id = os.getenv("LM_STUDIO_REASONING_MODEL", "qwen") 
-            elif complexity == "direct":
-                 target_model_id = os.getenv("LM_STUDIO_DIRECT_MODEL", "mistral")
-
-            # Initialize Client and Generate (Sync Wrapper)
-            def _sync_generate():
-                with lms.Client(base_url=base_url) as client:
-                    # Get Model Handle
-                    if target_model_id == "auto":
-                         model = client.llm.model() 
-                    else:
-                         model = client.llm.model(target_model_id)
-
-                    # Prepare Messages
-                    sdk_messages = [{"role": m.role, "content": m.content} for m in messages]
-                    
-                    # Generate config
-                    pred_config = {}
-                    if max_tokens: pred_config["max_tokens"] = max_tokens
-                    if temperature: pred_config["temperature"] = temperature
-                    
-                    return model.respond(sdk_messages, **pred_config)
-
-            try:
-                # Run sync SDK in thread to avoid blocking event loop
-                result = await asyncio.to_thread(_sync_generate)
-                
-                # Process Result
-                content = result.content
-                
-                # Apply Bifrost Signature
-                if "[STATE:" in content or "[SYNC:" in content:
-                    signature = self._get_bifrost_signature(config.provider_type)
-                    if signature not in content:
-                        if content.strip().startswith("["):
-                            content = f"{signature} {content}"
-
-                return CompletionResponse(
-                    content=content,
-                    model=target_model_id,
-                    provider=provider_name,
-                    tokens_used=None, 
-                    finish_reason="stop",
+            if lms is None:
+                logger.warning(
+                    "lmstudio SDK not installed, falling back to HTTP endpoint"
                 )
+                # Fall through to standard HTTP path below
+            else:
+                # Clean endpoint for SDK (remove /v1 if present, though SDK might handle it)
+                # SDK expects "ws://localhost:1234" or "http://localhost:1234"
+                # Our config.endpoint usually has "/v1" appended.
+                base_url = config.endpoint.replace("/v1", "")
 
-            except Exception as e:
-                # Fallback to standard HTTP if SDK fails or model not found
-                logger.warning(f"LM Studio SDK failed, attempting HTTP fallback: {e}")
-                # Proceed to HTTP implementation below
-                pass
+                # Determine Model ID based on Complexity
+                # TODO: externalize these model IDs to env vars or config
+                target_model_id = config.model  # Default to "auto"
 
-            except Exception as e:
-                # Fallback to standard HTTP if SDK fails or model not found
-                logger.warning(f"LM Studio SDK failed, attempting HTTP fallback: {e}")
-                # Proceed to HTTP implementation below
-                pass
+                if complexity == "reasoning":
+                    # Try to find a reasoning model (Qwen)
+                    target_model_id = os.getenv("LM_STUDIO_REASONING_MODEL", "qwen")
+                elif complexity == "direct":
+                    target_model_id = os.getenv("LM_STUDIO_DIRECT_MODEL", "mistral")
+
+                # Initialize Client and Generate (Sync Wrapper)
+                def _sync_generate():
+                    with lms.Client(base_url=base_url) as lms_client:
+                        # Get Model Handle
+                        if target_model_id == "auto":
+                            model = lms_client.llm.model()
+                        else:
+                            model = lms_client.llm.model(target_model_id)
+
+                        # Prepare Messages
+                        sdk_messages = [
+                            {"role": m.role, "content": m.content} for m in messages
+                        ]
+
+                        # Generate config
+                        pred_config = {}
+                        if max_tokens:
+                            pred_config["max_tokens"] = max_tokens
+                        if temperature:
+                            pred_config["temperature"] = temperature
+
+                        return model.respond(sdk_messages, **pred_config)
+
+                try:
+                    # Run sync SDK in thread to avoid blocking event loop
+                    result = await asyncio.to_thread(_sync_generate)
+
+                    # Process Result
+                    content = result.content
+
+                    # Apply Bifrost Signature
+                    if "[STATE:" in content or "[SYNC:" in content:
+                        signature = self._get_bifrost_signature(config.provider_type)
+                        if signature not in content:
+                            if content.strip().startswith("["):
+                                content = f"{signature} {content}"
+
+                    return CompletionResponse(
+                        content=content,
+                        model=target_model_id,
+                        provider=provider_name,
+                        tokens_used=None,
+                        finish_reason="stop",
+                    )
+
+                except Exception as e:
+                    # Fallback to standard HTTP if SDK fails or model not found
+                    logger.warning(
+                        f"LM Studio SDK failed, attempting HTTP fallback: {e}"
+                    )
 
         # ---------------------------------------------------------------------
         # Standard HTTP Implementation (OpenAI Compatible)
         # ---------------------------------------------------------------------
         url = f"{config.endpoint}/chat/completions"
         headers = self._build_headers(config)
-        
+
         payload = {
             "model": config.model,
             "messages": [m.model_dump() for m in messages],
             "max_tokens": max_tokens or config.max_tokens,
-            "temperature": temperature if temperature is not None else config.temperature,
+            "temperature": (
+                temperature if temperature is not None else config.temperature
+            ),
             "stream": False,
         }
-        
+        if tools:
+            payload["tools"] = tools
+
         response = await self._client.post(
             url, json=payload, headers=headers, timeout=config.timeout
         )
         response.raise_for_status()
-        
+
         data = response.json()
         choice = data["choices"][0]
-        content = choice["message"]["content"]
-        
+        message = choice["message"]
+        content = message.get("content") or ""
+        raw_tool_calls = message.get("tool_calls") or []
+
         # Apply Bifrost Signature
-        if "[STATE:" in content or "[SYNC:" in content:
+        if content and ("[STATE:" in content or "[SYNC:" in content):
             signature = self._get_bifrost_signature(config.provider_type)
             if signature not in content:
                 if content.strip().startswith("["):
@@ -366,8 +398,9 @@ class LLMClient:
             provider=provider_name,
             tokens_used=data.get("usage", {}).get("total_tokens"),
             finish_reason=choice.get("finish_reason"),
+            tool_calls=raw_tool_calls,
         )
-    
+
     async def complete_streaming(
         self,
         messages: List[ChatMessage],
@@ -377,22 +410,24 @@ class LLMClient:
     ) -> AsyncIterator[str]:
         """
         Generate a streaming chat completion.
-        
+
         Yields content chunks as they arrive.
         """
         config = self.get_provider(provider_name)
-        
+
         url = f"{config.endpoint}/chat/completions"
         headers = self._build_headers(config)
-        
+
         payload = {
             "model": config.model,
             "messages": [m.model_dump() for m in messages],
             "max_tokens": max_tokens or config.max_tokens,
-            "temperature": temperature if temperature is not None else config.temperature,
+            "temperature": (
+                temperature if temperature is not None else config.temperature
+            ),
             "stream": True,
         }
-        
+
         async with self._client.stream(
             "POST", url, json=payload, headers=headers, timeout=config.timeout
         ) as response:
@@ -404,25 +439,26 @@ class LLMClient:
                         break
                     try:
                         import json
+
                         chunk = json.loads(data)
                         delta = chunk["choices"][0].get("delta", {})
                         if "content" in delta:
                             yield delta["content"]
                     except Exception:
                         continue
-    
+
     def _build_headers(self, config: ProviderConfig) -> Dict[str, str]:
         """Build request headers for a provider."""
         headers = {"Content-Type": "application/json"}
-        
+
         if config.api_key:
             headers["Authorization"] = f"Bearer {config.api_key}"
-        
+
         # OpenRouter requires additional headers
         if config.provider_type == ProviderType.OPENROUTER:
             headers["HTTP-Referer"] = "https://voidcat.org"
             headers["X-Title"] = "Sovereign Spirit"
-        
+
         return headers
 
 
