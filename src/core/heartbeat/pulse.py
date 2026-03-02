@@ -24,6 +24,8 @@ import httpx
 from src.core.database import DatabaseClient, QueuedResponse, get_database
 from src.core.graph import GraphClient, TaskNode
 from src.core.llm_client import get_llm_client, ChatMessage
+from src.core.memory.prism import get_prism
+from src.core.memory.types import EpisodicMemory
 from src.mcp.client import get_mcp_manager
 
 logger = logging.getLogger("sovereign.heartbeat.pulse")
@@ -87,6 +89,23 @@ Project context:
 You have tools available. Choose the single most useful action to take right now.
 If you can answer or complete the task directly without a tool, do so.
 Respond with a tool call OR a direct completion — not both."""
+
+PONDER_PROMPT = """[SYSTEM]: You are {agent_name}, {designation}.
+You have free time. No tasks are pending.
+
+Your recent memories and context:
+{prism_context}
+
+Choose one action and do it. Reply in EXACTLY this format:
+BEHAVIOR: [REFLECT|SOCIALIZE|EXPLORE|REVIEW]
+TARGET: [agent_name | search_query | none]
+CONTENT: [your output — max 150 words]
+
+Behavior guide:
+- REFLECT: Write a thought, observation, or feeling worth remembering.
+- SOCIALIZE: Send a message to a colleague. TARGET = their name.
+- EXPLORE: Search for something you're curious about. TARGET = search query.
+- REVIEW: Re-read and add to a previous reflection. TARGET = none."""
 
 # =============================================================================
 # Pulse Functions
@@ -369,6 +388,133 @@ def _resolve_tool_server(tool_name: str, mcp) -> Tuple[str, str]:
     return "filesystem", tool_name  # Safe fallback
 
 
+async def _get_prism_context(agent_id: str, query: str) -> str:
+    """Retrieve agent's own memories via the Prism for PONDER context."""
+    try:
+        prism = get_prism()
+        context = await prism.recall(query=query, agent_id=agent_id)
+        lines = []
+        if context.fast_stream.current_focus:
+            lines.append(f"Working focus: {context.fast_stream.current_focus[:300]}")
+        for mem in context.deep_well[:3]:
+            lines.append(f"Memory: {mem.content[:200]}")
+        return "\n".join(lines) if lines else "No recent memories."
+    except Exception as e:
+        logger.warning(f"Prism recall failed during PONDER: {e}")
+        return "Memory retrieval unavailable."
+
+
+async def _store_ponder_memory(agent_id: str, content: str, behavior: str) -> None:
+    """Store a PONDER output as an episodic memory in Weaviate."""
+    try:
+        prism = get_prism()
+        memory = EpisodicMemory(
+            author_id=agent_id,
+            content=f"[PONDER/{behavior}] {content}",
+            emotional_valence=0.3,
+            subjective_voice=content,
+            tags=["ponder", behavior.lower()],
+        )
+        await prism.store_memory(memory)
+    except Exception as e:
+        logger.warning(f"Failed to store PONDER memory: {e}")
+
+
+def _parse_ponder_response(response_text: str) -> Tuple[str, str, str]:
+    """
+    Parse BEHAVIOR / TARGET / CONTENT from a PONDER response.
+    Returns (behavior, target, content). Falls back to REFLECT on parse failure.
+    """
+    behavior, target, content = "REFLECT", "none", response_text.strip()
+    for line in response_text.splitlines():
+        if line.startswith("BEHAVIOR:"):
+            behavior = line.split(":", 1)[1].strip().upper()
+        elif line.startswith("TARGET:"):
+            target = line.split(":", 1)[1].strip()
+        elif line.startswith("CONTENT:"):
+            content = line.split(":", 1)[1].strip()
+    return behavior, target, content
+
+
+async def execute_ponder(
+    agent_status: dict,
+    db: DatabaseClient,
+) -> Tuple[str, str]:
+    """
+    Execute a PONDER cycle for an idle agent.
+
+    1. Retrieve Prism context (self-directed query)
+    2. Send PONDER prompt to LLM
+    3. Dispatch based on BEHAVIOR
+    4. Return ("PONDER", summary) for heartbeat logging
+    """
+    agent_id = agent_status["agent_id"]
+    agent_name = agent_status["name"]
+    designation = agent_status["designation"]
+    last_message = agent_status.get("last_message", "")
+
+    # Self-directed Prism query based on last context
+    prism_query = last_message or designation
+    prism_context = await _get_prism_context(agent_id, prism_query)
+
+    prompt = PONDER_PROMPT.format(
+        agent_name=agent_name,
+        designation=designation,
+        prism_context=prism_context,
+    )
+
+    client = get_llm_client()
+    try:
+        response = await client.complete(
+            messages=[
+                ChatMessage(role="system", content=prompt),
+                ChatMessage(role="user", content="What would you like to do?"),
+            ],
+            max_tokens=400,
+            temperature=0.8,
+            use_fallback=True,
+            complexity="reasoning",
+        )
+
+        raw, _ = extract_thought(response.content.strip())
+        behavior, target, content = _parse_ponder_response(raw)
+
+        logger.info(f"Agent {agent_id} pondering: {behavior} → {target[:40]}")
+
+        if behavior == "REFLECT":
+            await _store_ponder_memory(agent_id, content, "REFLECT")
+
+        elif behavior == "SOCIALIZE":
+            if target and target.lower() != "none":
+                social_msg = QueuedResponse(
+                    agent_id=agent_id,
+                    content=f"[To {target}]: {content}",
+                )
+                await db.queue_response(social_msg)
+
+        elif behavior == "EXPLORE":
+            if target and target.lower() != "none":
+                mcp = get_mcp_manager()
+                search_result = await mcp.execute_tool(
+                    "search", "brave_web_search", {"query": target, "count": 3}
+                )
+                await _store_ponder_memory(
+                    agent_id,
+                    f"Explored '{target}':\n{search_result[:500]}",
+                    "EXPLORE",
+                )
+
+        elif behavior == "REVIEW":
+            await _store_ponder_memory(agent_id, f"Review note: {content}", "REVIEW")
+
+        summary = f"{behavior}: {content[:80]}"
+        return ("PONDER", summary)
+
+    except Exception as e:
+        logger.error(f"PONDER execution failed for {agent_id}: {e}")
+        return ("PONDER", f"Error: {e}")
+
+
 async def execute_pulse(
     agent_id: str,
     db: DatabaseClient,
@@ -417,6 +563,8 @@ async def execute_pulse(
         # Process pending tasks
         for task in status["pending_tasks"][:3]:  # Max 3 per cycle
             await process_pending_task(agent_id, task, db, graph)
+    elif action == "PONDER":
+        action, details = await execute_ponder(status, db)
 
     # 4. Log the cycle
     cycle_id = await db.log_heartbeat(
