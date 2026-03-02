@@ -9,6 +9,8 @@ import logging
 import json
 from typing import Optional, Dict, Any
 
+from sqlalchemy import text
+
 from src.core.database import DatabaseClient, AgentState
 from src.core.inference.prompts import build_system_prompt
 from src.core.identity.evaluator import ContextEvaluator
@@ -16,53 +18,64 @@ from src.core.llm_client import get_llm_client
 
 logger = logging.getLogger("sovereign.identity.manager")
 
+
 class IdentityManager:
     """
     Manages the dynamic switching of agent identities (Spirit Sync).
     Allows an agent body to 'channel' a target spirit's DNA.
     """
-    
+
     def __init__(self, db: DatabaseClient):
         self.db = db
         self.evaluator = ContextEvaluator(get_llm_client())
 
-    async def evaluate_and_sync(self, agent_id: str, current_spirit: str, user_message: str) -> Optional[str]:
+    async def evaluate_and_sync(
+        self, agent_id: str, current_spirit: str, user_message: str
+    ) -> Optional[str]:
         """
         Evaluates context and syncs if necessary.
         Returns the name of the new spirit if a switch occurred, else None.
         """
-        target_spirit, confidence = await self.evaluator.evaluate(user_message, current_spirit)
-        
+        target_spirit, confidence = await self.evaluator.evaluate(
+            user_message, current_spirit
+        )
+
         if target_spirit and target_spirit != current_spirit:
-            logger.info(f"Fluid Persona: Switching '{agent_id}' from {current_spirit} to {target_spirit} (Confidence: {confidence})")
+            logger.info(
+                f"Fluid Persona: Switching '{agent_id}' from {current_spirit} to {target_spirit} (Confidence: {confidence})"
+            )
             await self.sync_agent_identity(agent_id, target_spirit)
             return target_spirit
-            
+
         return None
 
-    async def sync_agent_identity(self, agent_id: str, target_spirit_name: str) -> Optional[AgentState]:
+    async def sync_agent_identity(
+        self, agent_id: str, target_spirit_name: str
+    ) -> Optional[AgentState]:
         """
         Syncs an agent's active profile with a spirit from the Pantheon.
-        
+
         Args:
             agent_id: The ID of the agent body (e.g., 'vessel_01').
             target_spirit_name: The name of the spirit to sync with (e.g., 'Albedo').
-            
+
         Returns:
             The updated AgentState if successful.
         """
         logger.info(f"Initiating Spirit Sync: {agent_id} -> {target_spirit_name}")
-        
+
         # 1. Fetch the target spirit's DNA from the database
         spirit_dna = await self.db.get_agent_state(target_spirit_name)
         if not spirit_dna:
-            logger.error(f"Sync failed: Spirit '{target_spirit_name}' not found in Pantheon.")
+            logger.error(
+                f"Sync failed: Spirit '{target_spirit_name}' not found in Pantheon."
+            )
             return None
-            
+
         # 2. Extract traits and metadata
         traits = spirit_dna.traits
         archetype = traits.get("archetype", "Unknown")
-        
+
         # 3. Generate the specialized system prompt
         specialized_prompt = build_system_prompt(
             agent_name=spirit_dna.name,
@@ -71,16 +84,15 @@ class IdentityManager:
             traits={
                 "big_five": traits.get("big_five", {}),
                 "expertise_tags": spirit_dna.expertise_tags,
-                "behavior_modes": spirit_dna.behavior_modes
-            }
+                "behavior_modes": spirit_dna.behavior_modes,
+            },
         )
-        
+
         # 4. Apply the sync to the agent body in the database
         # Note: In a real 'Body-Soul' decouple, we update the active state of the agent_id.
         # For now, we update the system_prompt of the agent_id to match the spirit's DNA.
         async with self.db.session() as session:
             try:
-                from sqlalchemy import text
                 await session.execute(
                     text("""
                         UPDATE agents
@@ -96,20 +108,26 @@ class IdentityManager:
                         "agent_id": agent_id,
                         "designation": spirit_dna.designation,
                         "prompt": specialized_prompt,
-                        "traits": spirit_dna.traits,  # This is already a dict
-                        "modes": spirit_dna.behavior_modes,
-                        "expertise": spirit_dna.expertise_tags
-                    }
+                        "traits": json.dumps(spirit_dna.traits),
+                        "modes": json.dumps(spirit_dna.behavior_modes),
+                        "expertise": spirit_dna.expertise_tags,
+                    },
                 )
                 await session.commit()
-                logger.info(f"Spirit Sync Complete: {agent_id} is now manifesting {target_spirit_name}.")
+                logger.info(
+                    f"Spirit Sync Complete: {agent_id} is now manifesting {target_spirit_name}."
+                )
                 return await self.db.get_agent_state(agent_id)
             except Exception as e:
                 await session.rollback()
-                logger.error(f"Spirit Sync failed for {agent_id} -> {target_spirit_name}: {e}")
+                logger.error(
+                    f"Spirit Sync failed for {agent_id} -> {target_spirit_name}: {e}"
+                )
                 raise
 
+
 _manager: Optional[IdentityManager] = None
+
 
 def get_identity_manager(db: DatabaseClient) -> IdentityManager:
     """Get or create the singleton identity manager."""

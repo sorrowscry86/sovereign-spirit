@@ -12,3 +12,5 @@ python-dotenv
 mcp
 websockets
 pyyaml
+lmstudio
+requests

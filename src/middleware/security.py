@@ -16,8 +16,8 @@ import logging
 from typing import Dict, Optional, Callable
 from collections import defaultdict
 
-from fastapi import Request, HTTPException, Security
-from fastapi.security import APIKeyHeader
+from fastapi import Request, HTTPException
+from starlette.requests import HTTPConnection
 
 logger = logging.getLogger("sovereign.security")
 
@@ -31,14 +31,18 @@ API_KEY = os.getenv("SOVEREIGN_API_KEY", "")
 
 # Rate limiting configuration
 RATE_LIMIT_ENABLED = os.getenv("SOVEREIGN_RATE_LIMIT_ENABLED", "true").lower() == "true"
-RATE_LIMIT_REQUESTS = int(os.getenv("SOVEREIGN_RATE_LIMIT_REQUESTS", "60"))  # requests per window
-RATE_LIMIT_WINDOW = int(os.getenv("SOVEREIGN_RATE_LIMIT_WINDOW", "60"))  # window in seconds
+RATE_LIMIT_REQUESTS = int(
+    os.getenv("SOVEREIGN_RATE_LIMIT_REQUESTS", "60")
+)  # requests per window
+RATE_LIMIT_WINDOW = int(
+    os.getenv("SOVEREIGN_RATE_LIMIT_WINDOW", "60")
+)  # window in seconds
 
 # Exempt paths from authentication (health checks, docs, dashboard)
 AUTH_EXEMPT_PATHS = {
-    "/health", 
-    "/docs", 
-    "/openapi.json", 
+    "/health",
+    "/docs",
+    "/openapi.json",
     "/redoc",
     "/",
     "/index.html",
@@ -47,20 +51,15 @@ AUTH_EXEMPT_PATHS = {
     "/main.dart.js",
     "/flutter.js",
     "/flutter_bootstrap.js",
-    "/flutter_service_worker.js"
+    "/flutter_service_worker.js",
 }
 
 # =============================================================================
 # API Key Authentication
 # =============================================================================
 
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-
-async def verify_api_key(
-    request: Request,
-    api_key: Optional[str] = Security(api_key_header)
-) -> Optional[str]:
+async def verify_api_key(request: HTTPConnection) -> Optional[str]:
     """
     Verify the API key if authentication is enabled.
 
@@ -72,7 +71,7 @@ async def verify_api_key(
     # Only enforce authentication on specific API routes
     # Everything else (static files, docs, health) is public
     protected_prefixes = ("/api", "/agent")
-    
+
     if not path.startswith(protected_prefixes):
         return None
 
@@ -85,7 +84,9 @@ async def verify_api_key(
         logger.warning("API key authentication enabled but no key configured!")
         return None
 
-    # Verify the provided key
+    # Read key directly from headers (works for both HTTP and WebSocket routes)
+    api_key = request.headers.get("X-API-Key")
+
     if not api_key:
         raise HTTPException(
             status_code=401,
@@ -106,6 +107,7 @@ async def verify_api_key(
 # =============================================================================
 # Rate Limiting
 # =============================================================================
+
 
 class RateLimiter:
     """
@@ -165,7 +167,7 @@ class RateLimiter:
 _rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW)
 
 
-def get_client_ip(request: Request) -> str:
+def get_client_ip(request: HTTPConnection) -> str:
     """Extract client IP from request, handling proxies."""
     # Check for forwarded header (behind reverse proxy)
     forwarded = request.headers.get("X-Forwarded-For")
@@ -209,7 +211,7 @@ async def check_rate_limit(request: Request) -> None:
                 "Retry-After": str(RATE_LIMIT_WINDOW),
                 "X-RateLimit-Limit": str(RATE_LIMIT_REQUESTS),
                 "X-RateLimit-Remaining": str(remaining),
-            }
+            },
         )
 
 
@@ -222,7 +224,7 @@ SCRIPT_PATTERN = re.compile(r"<script[^>]*>.*?</script>", re.IGNORECASE | re.DOT
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 SQL_INJECTION_PATTERN = re.compile(
     r"(\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|ALTER|CREATE|TRUNCATE)\b)",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 

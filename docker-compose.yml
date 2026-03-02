@@ -36,6 +36,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/app/config
+      - ./stasis_tanks:/app/stasis_tanks
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -68,25 +69,6 @@ services:
     networks:
       - sovereign_net
 
-#  # 👁️ THE FACE: Sovereign Frontend (The Observatorium)
-#  frontend:
-#    build:
-#      context: ./src/web_ui
-#      dockerfile: Dockerfile
-#    container_name: sovereign_frontend
-#    restart: always
-#    ports:
-#      - "5173:80"
-#    depends_on:
-#      middleware:
-#        condition: service_healthy
-#    healthcheck:
-#      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:80 || exit 1" ]
-#      interval: 30s
-#      timeout: 10s
-#      retries: 3
-#    networks:
-#      - sovereign_net
 
   # 🧠 THE GRAPH: Neo4j (Modified for Resilience)
   neo4j:

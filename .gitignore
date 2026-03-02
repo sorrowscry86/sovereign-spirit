@@ -17,6 +17,7 @@ secrets.json
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Build
 dist/
@@ -29,3 +30,24 @@ logs/
 
 # Docker volumes (local)
 data/
+
+# Test / Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Claude Code temp files
+tmpclaude-*-cwd
+.claude/worktrees/
+
+# Playwright MCP screenshots
+.playwright-mcp/
+
+# Stasis tanks (live agent state — volume-mounted, not committed)
+stasis_tanks/
+stasis_tanks_test/
+
+# Debug / one-off artifacts
+*.csv
+*.png
+repomix-output.xml

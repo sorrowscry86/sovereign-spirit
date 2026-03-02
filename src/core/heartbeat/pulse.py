@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from src.core.database import DatabaseClient, QueuedResponse, get_database
+from src.core.database import DatabaseClient, QueuedResponse
 from src.core.graph import GraphClient, TaskNode
 from src.core.llm_client import get_llm_client, ChatMessage
 from src.core.memory.prism import get_prism
@@ -184,9 +184,8 @@ async def check_agent_status(
         status_str = f"{pending_count} tasks, {unread_count} msgs"
 
     # Fetch active project for this agent
-    db_client = get_database()
     try:
-        active_project = await db_client.get_active_project_for_agent(agent_id)
+        active_project = await db.get_active_project_for_agent(agent_id)
     except Exception:
         active_project = None
 
@@ -495,14 +494,17 @@ async def execute_ponder(
         elif behavior == "EXPLORE":
             if target and target.lower() != "none":
                 mcp = get_mcp_manager()
-                search_result = await mcp.execute_tool(
-                    "search", "brave_web_search", {"query": target, "count": 3}
-                )
-                await _store_ponder_memory(
-                    agent_id,
-                    f"Explored '{target}':\n{search_result[:500]}",
-                    "EXPLORE",
-                )
+                if "search" not in mcp.sessions:
+                    logger.warning("EXPLORE skipped: search MCP server not connected")
+                else:
+                    search_result = await mcp.execute_tool(
+                        "search", "brave_web_search", {"query": target, "count": 3}
+                    )
+                    await _store_ponder_memory(
+                        agent_id,
+                        f"Explored '{target}':\n{search_result[:500]}",
+                        "EXPLORE",
+                    )
 
         elif behavior == "REVIEW":
             await _store_ponder_memory(agent_id, f"Review note: {content}", "REVIEW")

@@ -628,10 +628,9 @@ class DatabaseClient:
                 {
                     "title": title,
                     "description": description,
-                    "lead_agent_id": lead_agent_id,
+                    "lead_agent_id": lead_agent_id.lower() if lead_agent_id else None,
                 },
             )
-            await session.commit()
             row = result.mappings().first()
             return row["project_id"] if row else ""
 
@@ -672,7 +671,6 @@ class DatabaseClient:
                 """),
                 {"project_id": project_id, "status": status},
             )
-            await session.commit()
             return result.rowcount > 0
 
     async def append_project_progress(self, project_id: str, note: str) -> None:
@@ -689,7 +687,6 @@ class DatabaseClient:
                 """),
                 {"project_id": project_id, "line": line},
             )
-            await session.commit()
 
     async def get_active_project_for_agent(self, agent_id: str) -> Optional[dict]:
         """Get the most recent active project assigned to an agent."""
@@ -697,7 +694,7 @@ class DatabaseClient:
             result = await session.execute(
                 text("""
                     SELECT * FROM projects
-                    WHERE lead_agent_id = :agent_id AND status = 'active'
+                    WHERE LOWER(lead_agent_id) = LOWER(:agent_id) AND status = 'active'
                     ORDER BY updated_at DESC
                     LIMIT 1
                 """),
