@@ -1,0 +1,38 @@
+active_provider: lm_studio
+fallback_chain:
+  - lm_studio
+  - ollama_local
+  - openrouter
+providers:
+  ollama_local:
+    type: ollama
+    endpoint: http://host.docker.internal:11434/v1
+    model: llama3.2
+    api_key: null
+    max_tokens: 150
+    temperature: 0.7
+    timeout: 30.0
+  lm_studio:
+    type: lm_studio
+    endpoint: http://host.docker.internal:1234/v1
+    model: auto
+    api_key: null
+    max_tokens: 150
+    temperature: 0.7
+    timeout: 30.0
+  openrouter:
+    type: openrouter
+    endpoint: https://openrouter.ai/api/v1
+    model: xiaomi/mimo-v2-flash
+    api_key: "${OPENROUTER_API_KEY}"
+    max_tokens: 150
+    temperature: 0.7
+    timeout: 60.0
+  openrouter_free:
+    type: openrouter
+    endpoint: https://openrouter.ai/api/v1
+    model: meta-llama/llama-3.3-70b-instruct:free
+    api_key: "${OPENROUTER_API_KEY}"
+    max_tokens: 150
+    temperature: 0.7
+    timeout: 60.0
