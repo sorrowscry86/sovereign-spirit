@@ -39,12 +39,15 @@ from src.api.agents import router as agents_router
 from src.api.graph import router as graph_router
 from src.api.config import router as config_router
 from src.api.memory import router as memory_router
+from src.api.stasis import router as stasis_router
 from src.core.database import get_database, StimuliRecord
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
 from src.core.vector import get_vector_client
 from src.core.cache import get_cache
 from src.core.llm_client import shutdown_llm_client
+from src.mcp.client import get_mcp_manager, shutdown_mcp_manager
+from src.core.llm_config import initialize_llm_from_config
 from src.core.identity.manager import get_identity_manager
 from src.core.socket_manager import get_connection_manager
 
@@ -82,6 +85,13 @@ async def lifespan(app: FastAPI):
     """
     logger.info("=== SOVEREIGN SPIRIT MIDDLEWARE STARTING ===")
 
+    # Initialize LLM client from YAML config
+    try:
+        initialize_llm_from_config()
+        logger.info("LLM client initialized from config")
+    except Exception as e:
+        logger.warning(f"LLM config load failed, using defaults: {e}")
+
     # Initialize database connections
     db = get_database()
     graph = get_graph()
@@ -107,6 +117,27 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.error(f"Heartbeat initialization failed: {e}")
+
+    # Initialize MCP tool servers
+    mcp = get_mcp_manager()
+    try:
+        await mcp.connect_server("filesystem")
+        logger.info(
+            f"MCP filesystem server connected ({len(mcp.available_tools)} tools)"
+        )
+    except Exception as e:
+        logger.warning(f"MCP filesystem server failed to connect: {e}")
+
+    if os.getenv("BRAVE_SEARCH_API_KEY"):
+        try:
+            await mcp.connect_server("search")
+            logger.info(
+                f"MCP search server connected ({len(mcp.available_tools)} tools total)"
+            )
+        except Exception as e:
+            logger.warning(f"MCP search server failed to connect: {e}")
+    else:
+        logger.info("MCP search server skipped (BRAVE_SEARCH_API_KEY not set)")
 
     # Initialize ngrok tunnel for remote access (if enabled)
     ngrok_tunnel = None
@@ -174,6 +205,13 @@ async def lifespan(app: FastAPI):
         logger.info("Redis connection closed")
     except Exception as e:
         logger.warning(f"Redis shutdown warning: {e}")
+
+    # Close MCP servers
+    try:
+        await shutdown_mcp_manager()
+        logger.info("MCP servers disconnected")
+    except Exception as e:
+        logger.warning(f"MCP shutdown warning: {e}")
 
     # Close LLM client (httpx)
     try:
@@ -361,10 +399,11 @@ async def health_check():
 # Router Registration
 # =============================================================================
 
-app.include_router(agents_router, prefix="/agent")
+app.include_router(agents_router)
 app.include_router(graph_router)
 app.include_router(config_router)
 app.include_router(memory_router)
+app.include_router(stasis_router)
 
 
 @app.websocket("/ws/dashboard")
