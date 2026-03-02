@@ -10,6 +10,7 @@ This is Pillar 2 of the Sovereign Architecture - the ability to
 process thoughts without being spoken to.
 """
 
+import json
 import os
 import random
 import logging
@@ -23,6 +24,7 @@ import httpx
 from src.core.database import DatabaseClient, QueuedResponse
 from src.core.graph import GraphClient, TaskNode
 from src.core.llm_client import get_llm_client, ChatMessage
+from src.mcp.client import get_mcp_manager
 
 logger = logging.getLogger("sovereign.heartbeat.pulse")
 
@@ -33,7 +35,7 @@ logger = logging.getLogger("sovereign.heartbeat.pulse")
 # Heartbeat interval settings (from .env)
 BASE_INTERVAL_MS = int(os.getenv("HEARTBEAT_INTERVAL_MS", "90000"))
 JITTER_MS = int(os.getenv("HEARTBEAT_JITTER_MS", "15000"))
-MAX_TOKENS = int(os.getenv("HEARTBEAT_MAX_TOKENS", "300"))
+MAX_TOKENS = int(os.getenv("HEARTBEAT_MAX_TOKENS", "500"))
 TEMPERATURE = float(os.getenv("HEARTBEAT_TEMPERATURE", "0.6"))
 
 # Ollama configuration (deprecated - now uses llm_client)
@@ -58,6 +60,11 @@ Evaluate your current state. Reply ONLY with one of:
 - SLEEP (if no action needed)
 - ACT: [Brief task description] (if action required)
 
+Decision rules (follow exactly):
+- Reply ACT only if Pending Tasks > 0.
+- Unread messages alone do NOT trigger ACT — they are informational only.
+- If Pending Tasks == 0, reply SLEEP regardless of unread message count.
+
 Keep response under 20 words."""
 
 TASK_COMPLETION_PROMPT = """[SYSTEM]: You are {agent_name}.
@@ -65,9 +72,21 @@ You have completed the task: "{task_description}"
 Compose a brief, natural message to inform the user.
 Keep it under 30 words. Be warm but concise."""
 
+TASK_EXECUTION_PROMPT = """[SYSTEM]: You are {agent_name}, {designation}.
+
+Current task: {task_description}
+
+Project context:
+{project_context}
+
+You have tools available. Choose the single most useful action to take right now.
+If you can answer or complete the task directly without a tool, do so.
+Respond with a tool call OR a direct completion — not both."""
+
 # =============================================================================
 # Pulse Functions
 # =============================================================================
+
 
 def extract_thought(response: str) -> Tuple[str, Optional[str]]:
     """
@@ -77,23 +96,25 @@ def extract_thought(response: str) -> Tuple[str, Optional[str]]:
     thought_match = re.search(r"<think>(.*?)</think>", response, re.DOTALL)
     if thought_match:
         thought_content = thought_match.group(1).strip()
-        cleaned_content = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        cleaned_content = re.sub(
+            r"<think>.*?</think>", "", response, flags=re.DOTALL
+        ).strip()
         return cleaned_content, thought_content
-        
+
     # Check for truncated thought (start tag but no end tag)
     # This prevents the thought from leaking into the action if tokens run out
     start_match = re.search(r"<think>(.*)$", response, re.DOTALL)
     if start_match:
         thought_content = start_match.group(1).strip()
         return "", thought_content  # Return empty action for safety
-        
+
     return response.strip(), None
 
 
 def calculate_next_interval() -> float:
     """
     Calculate the next heartbeat interval with jitter.
-    
+
     Returns interval in seconds.
     """
     base = BASE_INTERVAL_MS / 1000.0
@@ -108,18 +129,18 @@ async def check_agent_status(
 ) -> dict:
     """
     Gather current status information for an agent.
-    
+
     Returns a dict with status details for prompt construction.
     """
     # Get agent state
     agent = await db.get_agent_state(agent_id)
     if not agent:
         return {"exists": False}
-    
+
     # Get pending tasks
     pending_count = await graph.get_pending_tasks_count(agent_id)
     pending_tasks = await graph.get_agent_tasks(agent_id, status="pending")
-    
+
     # Calculate last active
     if agent.last_active:
         delta = datetime.now(timezone.utc) - agent.last_active
@@ -127,17 +148,17 @@ async def check_agent_status(
         last_active = f"{minutes}m ago"
     else:
         last_active = "unknown"
-        
+
     # Get Unread Messages (The Hearing Aid)
     unread_count = await db.get_unread_message_count(agent_id)
     recent_msgs = await db.get_recent_stimuli(agent_id, limit=1)
-    last_message = recent_msgs[0]['content'] if recent_msgs else "None"
-    sender = recent_msgs[0]['sender'] if recent_msgs else "None"
-    
+    last_message = recent_msgs[0]["content"] if recent_msgs else "None"
+    sender = recent_msgs[0]["sender"] if recent_msgs else "None"
+
     status_str = "idle"
     if pending_count > 0 or unread_count > 0:
         status_str = f"{pending_count} tasks, {unread_count} msgs"
-    
+
     return {
         "exists": True,
         "agent_id": agent.agent_id,
@@ -148,7 +169,9 @@ async def check_agent_status(
         "pending_count": pending_count,
         "pending_tasks": pending_tasks,
         "unread_count": unread_count,
-        "last_message": f"{last_message} (from {sender})" if unread_count > 0 else "None",
+        "last_message": (
+            f"{last_message} (from {sender})" if unread_count > 0 else "None"
+        ),
         "status": status_str,
     }
 
@@ -158,7 +181,7 @@ async def generate_micro_thought(
 ) -> Tuple[str, Optional[str]]:
     """
     Generate a micro-thought using the unified LLM client.
-    
+
     Returns tuple of (action, details):
     - ("SLEEP", None) if no action needed
     - ("ACT", "task description") if action required
@@ -172,30 +195,30 @@ async def generate_micro_thought(
         unread_count=agent_status.get("unread_count", 0),
         last_message=agent_status.get("last_message", "None"),
     )
-    
+
     try:
         client = get_llm_client()
         messages = [
             ChatMessage(role="system", content=prompt),
             ChatMessage(role="user", content="Evaluate your current state."),
         ]
-        
+
         response = await client.complete(
             messages=messages,
             max_tokens=MAX_TOKENS,
             temperature=TEMPERATURE,
             use_fallback=True,
-            complexity="reasoning"
+            complexity="reasoning",
         )
-        
+
         result_raw = response.content.strip()
         result, thought = extract_thought(result_raw)
-        
+
         if thought:
             logger.info(f"Internal Monologue ({response.provider}): {thought}")
-            
+
         logger.debug(f"Micro-thought action from {response.provider}: {result}")
-        
+
         # Parse response
         if result.upper().startswith("SLEEP"):
             return ("SLEEP", None)
@@ -203,10 +226,13 @@ async def generate_micro_thought(
             task = result[4:].strip()
             return ("ACT", task)
         else:
-            # Ambiguous response, default to sleep
-            logger.warning(f"Ambiguous micro-thought: {result}")
+            # Ambiguous or truncated response — default to SLEEP
+            logger.warning(
+                f"Ambiguous micro-thought from {response.provider} "
+                f"(raw={repr(result_raw[:120])}), defaulting to SLEEP"
+            )
             return ("SLEEP", result)
-                
+
     except Exception as e:
         logger.error(f"Micro-thought generation failed: {e}")
         return ("SLEEP", f"Error: {e}")
@@ -219,29 +245,102 @@ async def process_pending_task(
     graph: GraphClient,
 ) -> bool:
     """
-    Process a single pending task.
-    
-    For now, this marks tasks as complete and queues a response.
-    In future, this would delegate to specific task handlers.
+    Process a single pending task using LLM + MCP tool loop (Option A).
+
+    Flow:
+    1. Build execution prompt with task context
+    2. Call LLM with available MCP tools
+    3. If tool_call returned: execute tool, synthesize result
+    4. If direct response: use as-is
+    5. Store result, queue response, mark task complete
     """
     task_id = task.get("task_id", "")
     description = task.get("description", "unknown task")
-    
-    logger.info(f"Agent {agent_id} processing task: {task_id}")
-    
-    # Mark task as complete
-    success = await graph.complete_task(task_id)
-    
-    if success:
-        # Queue a response message
-        response = QueuedResponse(
-            agent_id=agent_id,
-            content=f"I have attended to: {description}",
+    project_context = task.get("project_context", "No active project.")
+
+    agent = await db.get_agent_state(agent_id)
+    agent_name = agent.name if agent else agent_id
+    designation = agent.designation if agent else "Agent"
+
+    logger.info(f"Agent {agent_id} executing task: {task_id} — {description[:60]}")
+
+    client = get_llm_client()
+    mcp = get_mcp_manager()
+    tools = mcp.get_tools_for_llm()
+
+    prompt = TASK_EXECUTION_PROMPT.format(
+        agent_name=agent_name,
+        designation=designation,
+        task_description=description,
+        project_context=project_context,
+    )
+
+    messages = [
+        ChatMessage(role="system", content=prompt),
+        ChatMessage(role="user", content="Execute the task."),
+    ]
+
+    try:
+        response = await client.complete(
+            messages=messages,
+            max_tokens=600,
+            temperature=0.4,
+            use_fallback=True,
+            complexity="reasoning",
+            tools=tools if tools else None,
         )
-        await db.queue_response(response)
-        logger.info(f"Task {task_id} completed, response queued")
-    
-    return success
+
+        result_text = response.content
+
+        # Tool call branch — execute and synthesize
+        if response.tool_calls:
+            tool_call = response.tool_calls[0]
+            fn = tool_call.get("function", {})
+            server_name, tool_name = _resolve_tool_server(fn.get("name", ""), mcp)
+            arguments = {}
+            try:
+                arguments = json.loads(fn.get("arguments", "{}"))
+            except Exception:
+                pass
+
+            logger.info(f"Agent {agent_id} calling tool: {tool_name} on {server_name}")
+            tool_result = await mcp.execute_tool(server_name, tool_name, arguments)
+
+            # Synthesis call — no tools, just interpret the result
+            synthesis_messages = messages + [
+                ChatMessage(role="assistant", content=""),
+                ChatMessage(
+                    role="user",
+                    content=f"Tool result:\n{tool_result}\n\nSummarize what you found and what it means for the task.",
+                ),
+            ]
+            synthesis = await client.complete(
+                messages=synthesis_messages,
+                max_tokens=300,
+                temperature=0.4,
+                use_fallback=True,
+                complexity="reasoning",
+            )
+            result_text = synthesis.content
+
+        # Mark complete and queue
+        await graph.complete_task(task_id)
+        queued = QueuedResponse(agent_id=agent_id, content=result_text)
+        await db.queue_response(queued)
+        logger.info(f"Task {task_id} complete. Result queued.")
+        return True
+
+    except Exception as e:
+        logger.error(f"Task execution failed for {task_id}: {e}")
+        return False
+
+
+def _resolve_tool_server(tool_name: str, mcp) -> Tuple[str, str]:
+    """Find which server owns a tool by name."""
+    for tool in mcp.available_tools:
+        if tool["name"] == tool_name:
+            return tool["server"], tool_name
+    return "filesystem", tool_name  # Safe fallback
 
 
 async def execute_pulse(
@@ -252,29 +351,32 @@ async def execute_pulse(
 ) -> dict:
     """
     Execute a single heartbeat pulse for an agent.
-    
+
     This is the core autonomy logic:
     1. Check agent status
     2. Generate micro-thought
     3. Execute action if needed
     4. Log the cycle
-    
+
     Args:
         agent_id: The agent to pulse
         db: Database client
-        graph: Graph client  
+        graph: Graph client
         user_message: Optional user message to trigger response (bypasses normal logic)
-    
+
     Returns a summary dict of the pulse execution.
     """
-    logger.info(f"=== PULSE START: {agent_id} ===" + (f" [USER MESSAGE]" if user_message else ""))
-    
+    logger.info(
+        f"=== PULSE START: {agent_id} ==="
+        + (f" [USER MESSAGE]" if user_message else "")
+    )
+
     # 1. Check status
     status = await check_agent_status(agent_id, db, graph)
     if not status["exists"]:
         logger.warning(f"Agent {agent_id} not found")
         return {"action": "ERROR", "details": "Agent not found"}
-    
+
     # 2. If user_message present, force ACT mode with message context
     if user_message:
         action = "USER_MESSAGE"
@@ -283,25 +385,35 @@ async def execute_pulse(
     else:
         # Normal micro-thought generation
         action, details = await generate_micro_thought(status)
-    
+
     # 3. Execute action
     if action == "ACT" and status["pending_count"] > 0:
         # Process pending tasks
         for task in status["pending_tasks"][:3]:  # Max 3 per cycle
             await process_pending_task(agent_id, task, db, graph)
-    
+
     # 4. Log the cycle
     cycle_id = await db.log_heartbeat(
         agent_id=agent_id,
         action=action,
         details=details,
     )
-    
+
     # Update agent activity
     await db.touch_agent(agent_id)
-    
+
+    # Terminal Test: write sovereign_touch.txt to prove autonomous operation
+    try:
+        touch_path = os.path.join(os.getcwd(), "sovereign_touch.txt")
+        with open(touch_path, "w", encoding="utf-8") as f:
+            f.write(
+                f"{datetime.now(timezone.utc).isoformat()} | agent={agent_id} | action={action}\n"
+            )
+    except Exception as e:
+        logger.warning(f"Could not write sovereign_touch.txt: {e}")
+
     logger.info(f"=== PULSE END: {agent_id} | Action: {action} ===")
-    
+
     return {
         "agent_id": agent_id,
         "action": action,
