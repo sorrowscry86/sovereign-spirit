@@ -106,4 +106,3 @@ async with db.session() as session:
 ## Known Issues
 
 1. **Frontend service commented out in root `docker-compose.yml`** — React UI deleted, Flutter Web is embedded. Comment block can be removed.
-2. **Dead API key in git history** — `config/llm_providers.yaml` history contains a revoked key. Clean with BFG if repo goes public.
