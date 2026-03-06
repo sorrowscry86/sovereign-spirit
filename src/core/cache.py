@@ -73,6 +73,28 @@ class CacheClient:
         except Exception:
             return False
 
+    async def incr(self, key: str, amount: int = 1) -> int:
+        """Atomically increment a numeric key and return the new value."""
+        if not self._redis:
+            return 0
+        return await self._redis.incrby(key, amount)
+
+    async def h_incr(self, name: str, field: str, amount: int = 1) -> int:
+        """Atomically increment a hash field and return the new value."""
+        if not self._redis:
+            return 0
+        return await self._redis.hincrby(name, field, amount)
+
+    async def h_getall(self, name: str) -> dict:
+        """Return all fields from a hash as utf-8 decoded string pairs."""
+        if not self._redis:
+            return {}
+        raw = await self._redis.hgetall(name)
+        return {
+            k.decode("utf-8"): v.decode("utf-8")
+            for k, v in raw.items()
+        }
+
     # --- Working Memory (WorkingMemory Model) ---
 
     async def push_message(self, session_id: str, message: dict) -> None:
@@ -111,6 +133,32 @@ class CacheClient:
         key = f"wm:focus:{agent_id}"
         val = await self._redis.get(key)
         return val.decode("utf-8") if val else None
+
+    # --- Tether Inbox Signals ---
+
+    async def signal_tether_inbox(self, agent_id: str, message_id: str) -> None:
+        """Push a message ID into an agent's tether inbox signal list."""
+        if not self._redis:
+            return
+        key = f"tether:inbox:{agent_id}"
+        await self._redis.lpush(key, message_id)
+        await self._redis.ltrim(key, 0, 49)  # Keep at most 50 signals
+        await self._redis.expire(key, 86400)  # 24h TTL
+
+    async def get_tether_inbox_signals(self, agent_id: str, limit: int = 10) -> list:
+        """Get pending message IDs from the tether inbox signal list."""
+        if not self._redis:
+            return []
+        key = f"tether:inbox:{agent_id}"
+        raw = await self._redis.lrange(key, 0, limit - 1)
+        return [m.decode("utf-8") for m in raw]
+
+    async def clear_tether_inbox_signals(self, agent_id: str) -> None:
+        """Clear the tether inbox signal list after processing."""
+        if not self._redis:
+            return
+        key = f"tether:inbox:{agent_id}"
+        await self._redis.delete(key)
 
 
 _cache_client: Optional[CacheClient] = None

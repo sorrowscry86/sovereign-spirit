@@ -1,7 +1,7 @@
 """
 VoidCat RDC: Sovereign Middleware Service
 ==========================================
-Version: 1.0.0
+Version: 1.2.0
 Author: Echo (E-01)
 Date: 2026-01-23
 
@@ -41,6 +41,7 @@ from src.api.config import router as config_router
 from src.api.memory import router as memory_router
 from src.api.stasis import router as stasis_router
 from src.api.projects import router as projects_router
+from src.api.tether import router as tether_router
 from src.core.database import get_database, StimuliRecord
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
@@ -93,6 +94,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"LLM config load failed, using defaults: {e}")
 
+    # Warm up local provider for AUTO mode
+    try:
+        from src.core.llm_client import get_llm_client as _get_llm_client
+
+        _llm = _get_llm_client()
+        if _llm.inference_mode == "AUTO":
+            warm_result = await _llm.warm_local_provider()
+            logger.info(f"LM Studio warm-up: {warm_result.get('status', 'unknown')}")
+    except Exception as e:
+        logger.warning(f"LM Studio warm-up failed (non-blocking): {e}")
+
     # Initialize database connections
     db = get_database()
     graph = get_graph()
@@ -139,6 +151,17 @@ async def lifespan(app: FastAPI):
             logger.warning(f"MCP search server failed to connect: {e}")
     else:
         logger.info("MCP search server skipped (BRAVE_SEARCH_API_KEY not set)")
+
+    if os.getenv("PERPLEXITY_API_KEY"):
+        try:
+            await mcp.connect_server("perplexity")
+            logger.info(
+                f"MCP Perplexity server connected ({len(mcp.available_tools)} tools total)"
+            )
+        except Exception as e:
+            logger.warning(f"MCP Perplexity server failed to connect: {e}")
+    else:
+        logger.info("MCP Perplexity server skipped (PERPLEXITY_API_KEY not set)")
 
     # Initialize ngrok tunnel for remote access (if enabled)
     ngrok_tunnel = None
@@ -231,7 +254,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VoidCat Sovereign Spirit",
     description="Autonomous AI Agent Operating System",
-    version="1.0.0",
+    version="1.2.0",
     lifespan=lifespan,
     openapi_url="/api/v1/openapi.json",
     docs_url="/docs",
@@ -349,6 +372,17 @@ async def get_system_thoughts(limit: int = 50):
     )
 
 
+@app.get("/api/telemetry/no-inbox")
+async def get_no_inbox_telemetry():
+    """Return no-inbox autonomous branch counters for observability."""
+    cache = get_cache()
+    telemetry = await cache.h_getall("telemetry:no_inbox")
+    return {
+        "telemetry": telemetry,
+        "timestamp": datetime.now(timezone.utc),
+    }
+
+
 @app.post("/api/pulse/trigger")
 async def trigger_pulse(request: PulseRequest):
     """
@@ -389,7 +423,7 @@ async def health_check():
 
     return {
         "status": "online",
-        "version": "1.0.0",
+        "version": "1.2.0",
         "proxy_target": WEAVIATE_URL,
         "database": "connected" if db._initialized else "disconnected",
         "graph": "connected" if graph._initialized else "disconnected",
@@ -406,6 +440,7 @@ app.include_router(config_router)
 app.include_router(memory_router)
 app.include_router(stasis_router)
 app.include_router(projects_router)
+app.include_router(tether_router)
 
 
 @app.websocket("/ws/dashboard")
@@ -490,14 +525,94 @@ async def websocket_dashboard(websocket: WebSocket):
                     agent_id = payload.get("agent_id", "sovereign-001")
                     content = payload.get("content")
                     if content:
-                        await db_client.record_stimuli(
-                            StimuliRecord(
-                                agent_id=agent_id, content=content, source="god_mode"
+                        cache = get_cache()
+                        agent_uuid = await db_client.get_agent_uuid(agent_id)
+                        if agent_uuid:
+                            # Use tether layer for god_mode messages
+                            threads = await db_client.list_tether_threads(
+                                agent_id=agent_id,
+                                thread_type="god_mode",
+                                limit=1,
                             )
-                        )
+                            if threads:
+                                thread_id = threads[0]["id"]
+                            else:
+                                thread_id = await db_client.create_tether_thread(
+                                    thread_type="god_mode",
+                                    created_by="system",
+                                    subject=f"God Mode — {agent_id}",
+                                )
+                                await db_client.add_tether_participant(
+                                    thread_id, agent_id
+                                )
+                            msg_id = await db_client.post_tether_message(
+                                thread_id=thread_id,
+                                sender_type="system",
+                                sender_name="God Mode",
+                                content=content,
+                                message_type="god_mode",
+                                recipient_agent_id=agent_uuid,
+                            )
+                            await cache.signal_tether_inbox(agent_id, msg_id)
                         # Trigger pulse immediately
                         await heartbeat.trigger_once(agent_id)
                         logger.info(f"GOD_STIMULI: Injected to {agent_id}")
+
+                # --- Tether Protocol Commands ---
+                elif cmd_type == "TETHER_JOIN":
+                    thread_id = payload.get("thread_id")
+                    if thread_id:
+                        manager.subscribe(thread_id, websocket)
+                        logger.info(f"Socket subscribed to thread {thread_id}")
+
+                elif cmd_type == "TETHER_SEND":
+                    thread_id = payload.get("thread_id")
+                    agent_id = payload.get("agent_id")
+                    content = payload.get("content")
+                    if thread_id and agent_id and content:
+                        cache = get_cache()
+                        agent_uuid = await db_client.get_agent_uuid(agent_id)
+                        msg_id = await db_client.post_tether_message(
+                            thread_id=thread_id,
+                            sender_type="user",
+                            sender_name="User",
+                            content=content,
+                            message_type="chat",
+                            recipient_agent_id=agent_uuid,
+                        )
+                        if agent_uuid:
+                            await cache.signal_tether_inbox(agent_id, msg_id)
+                        # Broadcast to thread subscribers
+                        await manager.broadcast_to_thread(
+                            thread_id,
+                            "TETHER_MESSAGE",
+                            {
+                                "id": msg_id,
+                                "thread_id": thread_id,
+                                "sender_name": "User",
+                                "sender_type": "user",
+                                "content": content,
+                                "message_type": "chat",
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        # Trigger heartbeat
+                        await heartbeat.trigger_once(agent_id, user_message=content)
+
+                elif cmd_type == "TETHER_READ":
+                    message_ids = payload.get("message_ids", [])
+                    if message_ids:
+                        count = await db_client.mark_tether_messages_read(message_ids)
+                        await websocket.send_json(
+                            {
+                                "type": "MSG_STATUS_UPDATE",
+                                "data": {
+                                    "message_ids": message_ids,
+                                    "status": "read",
+                                    "count": count,
+                                },
+                            }
+                        )
 
                 # Echo back success or simple acknowledgement
                 await websocket.send_json(

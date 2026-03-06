@@ -109,6 +109,25 @@ class MCPManager:
             for t in self.available_tools
         ]
 
+    async def disconnect_server(self, server_name: str) -> bool:
+        """Disconnect a specific MCP server and remove its tools."""
+        if server_name not in self.sessions:
+            return False
+
+        # Remove tools from this server
+        self.available_tools = [
+            t for t in self.available_tools if t.get("server") != server_name
+        ]
+
+        # Close session (best-effort)
+        try:
+            del self.sessions[server_name]
+        except Exception as e:
+            logger.warning(f"Error disconnecting {server_name}: {e}")
+
+        logger.info(f"Disconnected MCP server: {server_name}")
+        return True
+
     async def shutdown(self):
         """Gracefully closes all tool connections."""
         logger.info("Severing MCP connections...")
