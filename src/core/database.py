@@ -91,6 +91,23 @@ class ProjectRecord(BaseModel):
     progress_notes: str = ""
 
 
+class TetherMessage(BaseModel):
+    """A message in the Tether Protocol unified communication layer."""
+
+    id: str = ""
+    thread_id: str = ""
+    reply_to: Optional[str] = None
+    sender_agent_id: Optional[str] = None
+    sender_type: str = "user"
+    sender_name: str = "User"
+    recipient_agent_id: Optional[str] = None
+    content: str = ""
+    message_type: str = "chat"
+    priority: int = 0
+    status: str = "pending"
+    created_at: Optional[datetime] = None
+
+
 # =============================================================================
 # Database Client
 # =============================================================================
@@ -227,6 +244,7 @@ class DatabaseClient:
                         last_active_at,
                         created_at
                     FROM agents
+                    WHERE is_active = true
                     ORDER BY name ASC
                 """))
             rows = result.fetchall()
@@ -702,6 +720,412 @@ class DatabaseClient:
             )
             row = result.mappings().first()
             return dict(row) if row else None
+
+    # =========================================================================
+    # Agent UUID Resolution
+    # =========================================================================
+
+    async def get_agent_uuid(self, agent_id: str) -> Optional[str]:
+        """Resolve an agent name to its UUID. Returns None if not found."""
+        async with self.session() as session:
+            result = await session.execute(
+                text("SELECT id FROM agents WHERE LOWER(name) = LOWER(:agent_name)"),
+                {"agent_name": agent_id},
+            )
+            row = result.fetchone()
+            return str(row.id) if row else None
+
+    # =========================================================================
+    # Tether Protocol Operations
+    # =========================================================================
+
+    async def create_tether_thread(
+        self,
+        thread_type: str,
+        created_by: str,
+        subject: Optional[str] = None,
+    ) -> str:
+        """Create a new conversation thread. Returns the thread UUID."""
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    INSERT INTO tether_threads (thread_type, created_by, subject)
+                    VALUES (:thread_type, :created_by, :subject)
+                    RETURNING id
+                """),
+                {
+                    "thread_type": thread_type,
+                    "created_by": created_by,
+                    "subject": subject,
+                },
+            )
+            row = result.fetchone()
+            return str(row.id) if row else ""
+
+    async def add_tether_participant(self, thread_id: str, agent_id: str) -> None:
+        """Add an agent as a participant in a thread."""
+        agent_uuid = await self.get_agent_uuid(agent_id)
+        if not agent_uuid:
+            return
+        async with self.session() as session:
+            await session.execute(
+                text("""
+                    INSERT INTO tether_participants (thread_id, agent_id)
+                    VALUES (:thread_id, :agent_id)
+                    ON CONFLICT (thread_id, agent_id) DO NOTHING
+                """),
+                {"thread_id": thread_id, "agent_id": agent_uuid},
+            )
+
+    async def post_tether_message(
+        self,
+        thread_id: str,
+        sender_type: str,
+        sender_name: str,
+        content: str,
+        message_type: str = "chat",
+        sender_agent_id: Optional[str] = None,
+        recipient_agent_id: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        priority: int = 0,
+    ) -> str:
+        """
+        Post a message to a tether thread. Returns the message UUID.
+
+        Also updates the thread's last_activity_at timestamp.
+        """
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    INSERT INTO tether_messages
+                        (thread_id, reply_to, sender_agent_id, sender_type,
+                         sender_name, recipient_agent_id, content,
+                         message_type, priority)
+                    VALUES
+                        (:thread_id, :reply_to, :sender_agent_id, :sender_type,
+                         :sender_name, :recipient_agent_id, :content,
+                         :message_type, :priority)
+                    RETURNING id, created_at
+                """),
+                {
+                    "thread_id": thread_id,
+                    "reply_to": reply_to,
+                    "sender_agent_id": sender_agent_id,
+                    "sender_type": sender_type,
+                    "sender_name": sender_name,
+                    "recipient_agent_id": recipient_agent_id,
+                    "content": content,
+                    "message_type": message_type,
+                    "priority": priority,
+                },
+            )
+            row = result.fetchone()
+            if not row:
+                return ""
+
+            # Update thread activity
+            await session.execute(
+                text("""
+                    UPDATE tether_threads
+                    SET last_activity_at = NOW()
+                    WHERE id = :thread_id
+                """),
+                {"thread_id": thread_id},
+            )
+
+            return str(row.id)
+
+    async def get_agent_inbox(
+        self, agent_id: str, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Get unread (pending) messages for an agent from the tether layer.
+
+        Returns messages where the agent is the recipient and status is 'pending'.
+        """
+        agent_uuid = await self.get_agent_uuid(agent_id)
+        if not agent_uuid:
+            return []
+
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    SELECT
+                        m.id, m.sender_name, m.sender_type, m.content,
+                        m.thread_id, m.created_at, m.message_type, m.priority
+                    FROM tether_messages m
+                    WHERE m.recipient_agent_id = :agent_uuid
+                      AND m.status = 'pending'
+                    ORDER BY m.priority DESC, m.created_at ASC
+                    LIMIT :limit
+                """),
+                {"agent_uuid": agent_uuid, "limit": limit},
+            )
+            rows = result.fetchall()
+            return [
+                {
+                    "id": str(row.id),
+                    "sender_name": row.sender_name,
+                    "sender_type": row.sender_type,
+                    "content": row.content,
+                    "thread_id": str(row.thread_id),
+                    "created_at": row.created_at,
+                    "message_type": row.message_type,
+                    "priority": row.priority,
+                }
+                for row in rows
+            ]
+
+    async def get_or_create_thread(
+        self,
+        from_agent_id: str,
+        to_agent_id: str,
+        thread_type: str = "agent_agent",
+    ) -> str:
+        """
+        Find an existing active thread between two agents, or create one.
+
+        For user_agent threads, from_agent_id is the user identifier
+        and to_agent_id is the agent name.
+        """
+        from_uuid = await self.get_agent_uuid(from_agent_id)
+        to_uuid = await self.get_agent_uuid(to_agent_id)
+
+        if not to_uuid:
+            return ""
+
+        # Look for an existing active thread with both participants
+        if from_uuid:
+            async with self.session() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT t.id
+                        FROM tether_threads t
+                        JOIN tether_participants p1 ON t.id = p1.thread_id AND p1.agent_id = :from_uuid
+                        JOIN tether_participants p2 ON t.id = p2.thread_id AND p2.agent_id = :to_uuid
+                        WHERE t.thread_type = :thread_type
+                          AND t.is_active = true
+                        ORDER BY t.last_activity_at DESC
+                        LIMIT 1
+                    """),
+                    {
+                        "from_uuid": from_uuid,
+                        "to_uuid": to_uuid,
+                        "thread_type": thread_type,
+                    },
+                )
+                row = result.fetchone()
+                if row:
+                    return str(row.id)
+
+        # No existing thread — create one
+        thread_id = await self.create_tether_thread(
+            thread_type=thread_type,
+            created_by=from_agent_id,
+        )
+
+        # Add participants
+        if from_uuid:
+            await self.add_tether_participant(thread_id, from_agent_id)
+        await self.add_tether_participant(thread_id, to_agent_id)
+
+        return thread_id
+
+    async def get_thread_messages(
+        self,
+        thread_id: str,
+        before: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Get messages in a thread, cursor-paginated by created_at."""
+        async with self.session() as session:
+            if before:
+                result = await session.execute(
+                    text("""
+                        SELECT
+                            m.id, m.thread_id, m.reply_to, m.sender_agent_id,
+                            m.sender_type, m.sender_name, m.recipient_agent_id,
+                            m.content, m.message_type, m.priority, m.status,
+                            m.delivered_at, m.read_at, m.created_at
+                        FROM tether_messages m
+                        WHERE m.thread_id = :thread_id
+                          AND m.created_at < (
+                              SELECT created_at FROM tether_messages WHERE id = :before_id
+                          )
+                        ORDER BY m.created_at DESC
+                        LIMIT :limit
+                    """),
+                    {"thread_id": thread_id, "before_id": before, "limit": limit},
+                )
+            else:
+                result = await session.execute(
+                    text("""
+                        SELECT
+                            m.id, m.thread_id, m.reply_to, m.sender_agent_id,
+                            m.sender_type, m.sender_name, m.recipient_agent_id,
+                            m.content, m.message_type, m.priority, m.status,
+                            m.delivered_at, m.read_at, m.created_at
+                        FROM tether_messages m
+                        WHERE m.thread_id = :thread_id
+                        ORDER BY m.created_at DESC
+                        LIMIT :limit
+                    """),
+                    {"thread_id": thread_id, "limit": limit},
+                )
+
+            rows = result.fetchall()
+            return [
+                {
+                    "id": str(row.id),
+                    "thread_id": str(row.thread_id),
+                    "reply_to": str(row.reply_to) if row.reply_to else None,
+                    "sender_agent_id": (
+                        str(row.sender_agent_id) if row.sender_agent_id else None
+                    ),
+                    "sender_type": row.sender_type,
+                    "sender_name": row.sender_name,
+                    "recipient_agent_id": (
+                        str(row.recipient_agent_id) if row.recipient_agent_id else None
+                    ),
+                    "content": row.content,
+                    "message_type": row.message_type,
+                    "priority": row.priority,
+                    "status": row.status,
+                    "delivered_at": row.delivered_at,
+                    "read_at": row.read_at,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ]
+
+    async def mark_tether_messages_read(self, message_ids: List[str]) -> int:
+        """Mark tether messages as read."""
+        if not message_ids:
+            return 0
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    UPDATE tether_messages
+                    SET status = 'read', read_at = NOW()
+                    WHERE id = ANY(:ids)
+                      AND status IN ('pending', 'delivered')
+                """),
+                {"ids": message_ids},
+            )
+            return result.rowcount
+
+    async def mark_tether_messages_delivered(self, message_ids: List[str]) -> int:
+        """Mark tether messages as delivered."""
+        if not message_ids:
+            return 0
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    UPDATE tether_messages
+                    SET status = 'delivered', delivered_at = NOW()
+                    WHERE id = ANY(:ids)
+                      AND status = 'pending'
+                """),
+                {"ids": message_ids},
+            )
+            return result.rowcount
+
+    async def list_tether_threads(
+        self,
+        agent_id: Optional[str] = None,
+        thread_type: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """List tether threads, optionally filtered by agent participation or type."""
+        async with self.session() as session:
+            conditions = ["t.is_active = true"]
+            params: Dict[str, Any] = {"limit": limit}
+
+            if agent_id:
+                agent_uuid = await self.get_agent_uuid(agent_id)
+                if not agent_uuid:
+                    return []
+                conditions.append("""
+                    t.id IN (
+                        SELECT thread_id FROM tether_participants
+                        WHERE agent_id = :agent_uuid
+                    )
+                """)
+                params["agent_uuid"] = agent_uuid
+
+            if thread_type:
+                conditions.append("t.thread_type = :thread_type")
+                params["thread_type"] = thread_type
+
+            where_clause = " AND ".join(conditions)
+            result = await session.execute(
+                text(f"""
+                    SELECT t.id, t.thread_type, t.subject, t.created_by,
+                           t.created_at, t.last_activity_at,
+                           (SELECT COUNT(*) FROM tether_messages m
+                            WHERE m.thread_id = t.id) AS message_count
+                    FROM tether_threads t
+                    WHERE {where_clause}
+                    ORDER BY t.last_activity_at DESC
+                    LIMIT :limit
+                """),
+                params,
+            )
+            rows = result.fetchall()
+            return [
+                {
+                    "id": str(row.id),
+                    "thread_type": row.thread_type,
+                    "subject": row.subject,
+                    "created_by": row.created_by,
+                    "created_at": row.created_at,
+                    "last_activity_at": row.last_activity_at,
+                    "message_count": row.message_count,
+                }
+                for row in rows
+            ]
+
+    async def get_tether_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single thread with its participants."""
+        async with self.session() as session:
+            result = await session.execute(
+                text("""
+                    SELECT t.id, t.thread_type, t.subject, t.created_by,
+                           t.created_at, t.last_activity_at, t.is_active
+                    FROM tether_threads t
+                    WHERE t.id = :thread_id
+                """),
+                {"thread_id": thread_id},
+            )
+            row = result.fetchone()
+            if not row:
+                return None
+
+            # Get participants
+            part_result = await session.execute(
+                text("""
+                    SELECT a.name, p.joined_at
+                    FROM tether_participants p
+                    JOIN agents a ON p.agent_id = a.id
+                    WHERE p.thread_id = :thread_id
+                """),
+                {"thread_id": thread_id},
+            )
+            participants = [
+                {"name": p.name, "joined_at": p.joined_at}
+                for p in part_result.fetchall()
+            ]
+
+            return {
+                "id": str(row.id),
+                "thread_type": row.thread_type,
+                "subject": row.subject,
+                "created_by": row.created_by,
+                "created_at": row.created_at,
+                "last_activity_at": row.last_activity_at,
+                "is_active": row.is_active,
+                "participants": participants,
+            }
 
 
 # =============================================================================

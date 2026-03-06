@@ -1,8 +1,8 @@
-active_provider: lm_studio
+active_provider: openrouter_free
 fallback_chain:
-  - lm_studio
-  - ollama_local
-  - openrouter
+- openrouter_free
+- lm_studio
+- openrouter
 providers:
   ollama_local:
     type: ollama
@@ -24,7 +24,7 @@ providers:
     type: openrouter
     endpoint: https://openrouter.ai/api/v1
     model: xiaomi/mimo-v2-flash
-    api_key: "${OPENROUTER_API_KEY}"
+    api_key: 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
     max_tokens: 150
     temperature: 0.7
     timeout: 60.0
@@ -32,7 +32,7 @@ providers:
     type: openrouter
     endpoint: https://openrouter.ai/api/v1
     model: meta-llama/llama-3.3-70b-instruct:free
-    api_key: "${OPENROUTER_API_KEY}"
+    api_key: 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
     max_tokens: 150
     temperature: 0.7
     timeout: 60.0

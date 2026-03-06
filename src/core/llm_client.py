@@ -142,6 +142,9 @@ class LLMClient:
         ]
         self.inference_mode: str = "AUTO"
         self.current_route: str = "LOCAL"
+        self.cloud_healthy: bool = True
+        self.last_cloud_failure: Optional[str] = None
+        self.last_cloud_failure_at: Optional[Any] = None  # datetime
         self._client = httpx.AsyncClient(timeout=60.0)
 
     def _get_bifrost_signature(self, provider_type: ProviderType) -> str:
@@ -188,6 +191,55 @@ class LLMClient:
             logger.debug(f"Health check failed for {config.name}: {e}")
             return False
 
+    async def warm_local_provider(self) -> Dict[str, Any]:
+        """
+        Warm up LM Studio by checking if a model is loaded,
+        and requesting qwen3-4b-thinking if not.
+        Returns status dict for logging/API response.
+        """
+        lm_config = self.providers.get("lm_studio")
+        if not lm_config:
+            return {"status": "skipped", "reason": "lm_studio provider not configured"}
+
+        base_url = lm_config.endpoint.replace("/v1", "")
+        target_model = os.getenv("LM_STUDIO_WARM_MODEL", "qwen3-4b-thinking")
+
+        try:
+            # Check what's loaded
+            resp = await self._client.get(f"{lm_config.endpoint}/models", timeout=5.0)
+            if resp.status_code == 200:
+                models = resp.json().get("data", [])
+                loaded_ids = [m.get("id", "") for m in models]
+                if any(target_model.lower() in mid.lower() for mid in loaded_ids):
+                    return {
+                        "status": "ready",
+                        "model": target_model,
+                        "already_loaded": True,
+                    }
+
+            # Try to load the model via LM Studio API
+            load_resp = await self._client.post(
+                f"{base_url}/api/v0/models/load",
+                json={"model": target_model},
+                timeout=30.0,
+            )
+            if load_resp.status_code == 200:
+                return {
+                    "status": "ready",
+                    "model": target_model,
+                    "already_loaded": False,
+                }
+            else:
+                return {
+                    "status": "partial",
+                    "reason": f"Load request returned {load_resp.status_code}",
+                    "model": target_model,
+                }
+
+        except Exception as e:
+            logger.warning(f"LM Studio warm-up failed: {e}")
+            return {"status": "failed", "reason": str(e)}
+
     async def complete(
         self,
         messages: List[ChatMessage],
@@ -217,13 +269,22 @@ class LLMClient:
             # Explicit override
             providers_to_try = [provider_name]
         elif self.inference_mode == "AUTO":
-            # Dynamic routing based on complexity
-            if complexity == "reasoning":
-                # Prioritize Thinking models (LM Studio) or Cloud
-                providers_to_try = ["lm_studio", "openrouter", "ollama_local"]
-            else:
-                # Direct tasks use fastest local option
-                providers_to_try = ["ollama_local", "lm_studio", "openrouter"]
+            # Cloud-first, local fallback
+            cloud_providers = [
+                p
+                for p in self.fallback_chain
+                if p in self.providers
+                and self.providers[p].provider_type
+                in [ProviderType.OPENROUTER, ProviderType.OPENAI]
+            ]
+            local_providers = [
+                p
+                for p in self.fallback_chain
+                if p in self.providers
+                and self.providers[p].provider_type
+                in [ProviderType.OLLAMA, ProviderType.LM_STUDIO]
+            ]
+            providers_to_try = cloud_providers + local_providers
         else:
             # Standard fallback chain filtered by mode
             chain = [self.active_provider] + [
@@ -246,17 +307,31 @@ class LLMClient:
         last_error = None
         for p_name in providers_to_try:
             try:
-                return await self._complete_with_provider(
+                result = await self._complete_with_provider(
                     p_name, messages, max_tokens, temperature, complexity, tools
                 )
+                # Track successful route
+                if self.inference_mode == "AUTO":
+                    ptype = self.providers[p_name].provider_type
+                    if ptype in [ProviderType.OPENROUTER, ProviderType.OPENAI]:
+                        self.current_route = "CLOUD"
+                        if not self.cloud_healthy:
+                            self.cloud_healthy = True
+                            logger.info("Cloud provider recovered")
+                    else:
+                        self.current_route = "LOCAL"
+                return result
             except Exception as e:
                 logger.warning(f"Provider {p_name} failed: {e}")
                 last_error = e
-                # Update current route if failure occurs (optional, but good for AUTO)
                 if self.inference_mode == "AUTO":
-                    # If local failed, we might want to mark current route as CLOUD
-                    # However, that logic belongs in a more complex router.py
-                    pass
+                    ptype = self.providers[p_name].provider_type
+                    if ptype in [ProviderType.OPENROUTER, ProviderType.OPENAI]:
+                        self.cloud_healthy = False
+                        self.last_cloud_failure = str(e)
+                        from datetime import datetime, timezone
+
+                        self.last_cloud_failure_at = datetime.now(timezone.utc)
 
         raise RuntimeError(
             f"All providers failed for mode {self.inference_mode}. Last error: {last_error}"

@@ -26,7 +26,10 @@ from src.core.graph import GraphClient, TaskNode
 from src.core.llm_client import get_llm_client, ChatMessage
 from src.core.memory.prism import get_prism
 from src.core.memory.types import EpisodicMemory
+from src.core.cache import get_cache
+from src.core.socket_manager import get_connection_manager
 from src.mcp.client import get_mcp_manager
+from src.core.inference.prompts import build_system_prompt
 
 logger = logging.getLogger("sovereign.heartbeat.pulse")
 
@@ -54,9 +57,8 @@ Current Status: {status}
 User Last Active: {last_active}
 Pending Tasks: {pending_tasks}
 
-[ATTENTION STIMULI]
-Unread Messages: {unread_count}
-Last Message: "{last_message}"
+[INBOX — {inbox_count} messages]
+{inbox_summary}
 
 [ACTIVE PROJECT]
 {project_context}
@@ -64,13 +66,14 @@ Last Message: "{last_message}"
 Evaluate your current state. Reply ONLY with one of:
 - SLEEP (if no action needed)
 - ACT: [Brief task description] (if action required)
+- ACT: RESPOND (if Inbox contains messages from User that need a reply)
 - PONDER (if idle and feel like reflecting, exploring, or connecting)
 
 Decision rules (follow exactly):
+- Reply ACT: RESPOND if Inbox contains messages from User.
 - Reply ACT only if Pending Tasks > 0, or Active Project requires next step.
-- Reply PONDER approximately 40% of idle cycles when no tasks are pending.
+- Reply PONDER if Inbox contains messages from other agents, or idle with ~40% chance.
 - Reply SLEEP otherwise.
-- Unread messages alone do NOT trigger ACT — they are informational only.
 
 Keep response under 20 words."""
 
@@ -89,6 +92,18 @@ Project context:
 You have tools available. Choose the single most useful action to take right now.
 If you can answer or complete the task directly without a tool, do so.
 Respond with a tool call OR a direct completion — not both."""
+
+INBOX_RESPONSE_PROMPT = """[SYSTEM]: You are {agent_name}, {designation}.
+You have received messages in your inbox. Respond naturally and helpfully.
+
+Messages:
+{inbox_messages}
+
+Respond to the most important message. Be warm, concise, and in-character.
+Keep response under 150 words.
+
+IMPORTANT: If you need to reason or plan your response, YOU MUST wrap ALL internal monologue inside <think>...</think> tags. 
+Only the final spoken response should be placed outside the tags."""
 
 PONDER_PROMPT = """[SYSTEM]: You are {agent_name}, {designation}.
 You have free time. No tasks are pending.
@@ -173,15 +188,26 @@ async def check_agent_status(
     else:
         last_active = "unknown"
 
-    # Get Unread Messages (The Hearing Aid)
-    unread_count = await db.get_unread_message_count(agent_id)
-    recent_msgs = await db.get_recent_stimuli(agent_id, limit=1)
-    last_message = recent_msgs[0]["content"] if recent_msgs else "None"
-    sender = recent_msgs[0]["sender"] if recent_msgs else "None"
+    # Get Tether Inbox (replaces legacy stimuli polling)
+    inbox = await db.get_agent_inbox(agent_id, limit=5)
+    inbox_count = len(inbox)
+
+    # Build structured inbox summary for MUSE prompt
+    inbox_lines = []
+    for msg in inbox[:3]:
+        sender_label = msg["sender_type"].upper()
+        inbox_lines.append(
+            f"- [{sender_label} {msg['sender_name']}]: {msg['content'][:80]}"
+        )
+    inbox_summary = "\n".join(inbox_lines) if inbox_lines else "No messages."
+
+    # Legacy compatibility: extract last message info
+    last_message = inbox[0]["content"] if inbox else "None"
+    sender = inbox[0]["sender_name"] if inbox else "None"
 
     status_str = "idle"
-    if pending_count > 0 or unread_count > 0:
-        status_str = f"{pending_count} tasks, {unread_count} msgs"
+    if pending_count > 0 or inbox_count > 0:
+        status_str = f"{pending_count} tasks, {inbox_count} msgs"
 
     # Fetch active project for this agent
     try:
@@ -198,9 +224,12 @@ async def check_agent_status(
         "last_active": last_active,
         "pending_count": pending_count,
         "pending_tasks": pending_tasks,
-        "unread_count": unread_count,
+        "inbox": inbox,
+        "inbox_count": inbox_count,
+        "inbox_summary": inbox_summary,
+        "unread_count": inbox_count,
         "last_message": (
-            f"{last_message} (from {sender})" if unread_count > 0 else "None"
+            f"{last_message} (from {sender})" if inbox_count > 0 else "None"
         ),
         "status": status_str,
         "active_project": active_project,
@@ -233,8 +262,8 @@ async def generate_micro_thought(
         status=agent_status["status"],
         last_active=agent_status["last_active"],
         pending_tasks=agent_status["pending_count"],
-        unread_count=agent_status.get("unread_count", 0),
-        last_message=agent_status.get("last_message", "None"),
+        inbox_count=agent_status.get("inbox_count", 0),
+        inbox_summary=agent_status.get("inbox_summary", "No messages."),
         project_context=project_context,
     )
 
@@ -435,6 +464,211 @@ def _parse_ponder_response(response_text: str) -> Tuple[str, str, str]:
     return behavior, target, content
 
 
+async def process_inbox_response(
+    agent_status: dict,
+    db: DatabaseClient,
+) -> Tuple[str, str]:
+    """
+    Process inbox messages and generate a response via LLM.
+
+    Reads unread messages, generates a reply, writes it back as a
+    tether_messages row, and broadcasts via WebSocket.
+    """
+    agent_id = agent_status["agent_id"]
+    agent_name = agent_status["name"]
+    designation = agent_status["designation"]
+    inbox = agent_status.get("inbox", [])
+
+    if not inbox:
+        return ("ACT", "No messages to respond to")
+
+    # Build message context for the LLM
+    inbox_lines = []
+    for msg in inbox[:5]:
+        sender_label = msg["sender_type"].upper()
+        inbox_lines.append(f"[{sender_label} {msg['sender_name']}]: {msg['content']}")
+    inbox_text = "\n".join(inbox_lines)
+
+    target_msg = inbox[0]
+    thread_id = target_msg["thread_id"]
+
+    # Pull recent thread history so the model continues the current conversation
+    # instead of resetting into generic greeting behavior.
+    thread_history = await db.get_thread_messages(thread_id=thread_id, limit=12)
+    thread_history = list(reversed(thread_history))
+
+    agent_state = await db.get_agent_state(agent_id)
+    if agent_state and agent_state.system_prompt:
+        persona_prompt = agent_state.system_prompt
+    else:
+        traits = agent_state.traits if agent_state else {}
+        persona_prompt = build_system_prompt(
+            agent_name=agent_name,
+            designation=designation,
+            archetype=traits.get("archetype", designation),
+            traits={
+                "big_five": traits.get("big_five", {}),
+                "expertise_tags": (agent_state.expertise_tags if agent_state else []),
+                "behavior_modes": (agent_state.behavior_modes if agent_state else []),
+            },
+        )
+
+    prompt = INBOX_RESPONSE_PROMPT.format(
+        agent_name=agent_name,
+        designation=designation,
+        inbox_messages=inbox_text,
+    )
+
+    system_prompt = (
+        f"{persona_prompt}\n\n"
+        "### RESPONSE CONTINUITY (MANDATORY)\n"
+        "1. Continue the active thread context below. Do not restart with a fresh greeting unless the user explicitly starts over.\n"
+        "2. Prioritize unresolved points from the latest turns.\n"
+        "3. If peer coordination is needed, acknowledge Pantheon peers as internal collaborators.\n\n"
+        f"{prompt}"
+    )
+
+    if agent_name.strip().lower() == "beatrice":
+        system_prompt += (
+            "\n\n### BEATRICE END-CADENCE (MANDATORY)\n"
+            "End key declarative lines with \"I suppose.\" or \"In fact.\" while maintaining natural rhythm."
+        )
+
+    client = get_llm_client()
+    mcp = get_mcp_manager()
+    tools = mcp.get_tools_for_llm()
+
+    messages = [ChatMessage(role="system", content=system_prompt)]
+
+    for msg in thread_history:
+        sender_type = (msg.get("sender_type") or "").lower()
+        sender_name = msg.get("sender_name") or "Unknown"
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+
+        if sender_type == "agent" and sender_name.lower() == agent_name.lower():
+            role = "assistant"
+        else:
+            role = "user"
+
+        messages.append(ChatMessage(role=role, content=f"{sender_name}: {content}"))
+
+    messages.append(
+        ChatMessage(
+            role="user",
+            content="Respond to the latest pending message with continuity and in-character precision.",
+        )
+    )
+
+    try:
+        response = await client.complete(
+            messages=messages,
+            max_tokens=400,
+            temperature=0.6,
+            use_fallback=True,
+            complexity="reasoning",
+            tools=tools if tools else None,
+        )
+
+        reply_text = response.content.strip()
+
+        if response.tool_calls:
+            tool_call = response.tool_calls[0]
+            fn = tool_call.get("function", {})
+            server_name, tool_name = _resolve_tool_server(fn.get("name", ""), mcp)
+            arguments = {}
+            try:
+                arguments = json.loads(fn.get("arguments", "{}"))
+            except Exception:
+                arguments = {}
+
+            logger.info(f"Agent {agent_id} inbox tool call: {tool_name} on {server_name}")
+            tool_result = await mcp.execute_tool(server_name, tool_name, arguments)
+
+            synthesis_messages = messages + [
+                ChatMessage(role="assistant", content=""),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "Tool result:\n"
+                        f"{tool_result}\n\n"
+                        "Now craft the final in-thread reply. Maintain persona and continuity."
+                    ),
+                ),
+            ]
+            synthesis = await client.complete(
+                messages=synthesis_messages,
+                max_tokens=300,
+                temperature=0.5,
+                use_fallback=True,
+                complexity="reasoning",
+            )
+            reply_text = synthesis.content.strip()
+
+        reply_text, _ = extract_thought(reply_text)
+        if not reply_text:
+            reply_text = "Acknowledged. I will proceed with the current thread context."
+
+        # Resolve agent UUID for sender
+        agent_uuid = await db.get_agent_uuid(agent_id)
+
+        # Determine recipient: if the sender was a user, recipient is None (broadcast to thread)
+        # If the sender was an agent, recipient is the sender's agent UUID
+        recipient_uuid = None
+        if target_msg["sender_type"] == "agent":
+            recipient_uuid = await db.get_agent_uuid(target_msg["sender_name"])
+
+        # Post the reply to the tether thread
+        msg_id = await db.post_tether_message(
+            thread_id=thread_id,
+            sender_type="agent",
+            sender_name=agent_name,
+            content=reply_text,
+            message_type="chat",
+            sender_agent_id=agent_uuid,
+            recipient_agent_id=recipient_uuid,
+            reply_to=target_msg["id"],
+        )
+
+        # Signal recipient inbox if it's an agent
+        if recipient_uuid:
+            cache = get_cache()
+            await cache.signal_tether_inbox(target_msg["sender_name"], msg_id)
+
+        # Broadcast via WebSocket
+        ws_manager = get_connection_manager()
+        await ws_manager.broadcast_to_thread(
+            thread_id,
+            "TETHER_MESSAGE",
+            {
+                "id": msg_id,
+                "thread_id": thread_id,
+                "sender_name": agent_name,
+                "sender_type": "agent",
+                "content": reply_text,
+                "message_type": "chat",
+                "reply_to": target_msg["id"],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        # Mark processed messages as read
+        processed_ids = [msg["id"] for msg in inbox]
+        await db.mark_tether_messages_read(processed_ids)
+
+        # Also clear Redis inbox signals
+        cache = get_cache()
+        await cache.clear_tether_inbox_signals(agent_id)
+
+        logger.info(f"Agent {agent_id} responded to inbox ({len(inbox)} msgs)")
+        return ("ACT", f"RESPOND: {reply_text[:80]}")
+
+    except Exception as e:
+        logger.error(f"Inbox response failed for {agent_id}: {e}")
+        return ("ACT", f"RESPOND error: {e}")
+
+
 async def execute_ponder(
     agent_status: dict,
     db: DatabaseClient,
@@ -485,11 +719,45 @@ async def execute_ponder(
 
         elif behavior == "SOCIALIZE":
             if target and target.lower() != "none":
-                social_msg = QueuedResponse(
-                    agent_id=agent_id,
-                    content=f"[To {target}]: {content}",
-                )
-                await db.queue_response(social_msg)
+                target_agent = await db.get_agent_state(target)
+                if target_agent:
+                    target_uuid = await db.get_agent_uuid(target)
+                    agent_uuid = await db.get_agent_uuid(agent_id)
+                    thread_id = await db.get_or_create_thread(
+                        agent_id, target, "agent_agent"
+                    )
+                    msg_id = await db.post_tether_message(
+                        thread_id=thread_id,
+                        sender_type="agent",
+                        sender_name=agent_name,
+                        content=content,
+                        message_type="ponder_social",
+                        sender_agent_id=agent_uuid,
+                        recipient_agent_id=target_uuid,
+                    )
+                    # Signal Redis inbox for target agent
+                    cache = get_cache()
+                    await cache.signal_tether_inbox(target, msg_id)
+                    # Broadcast via WebSocket
+                    ws_manager = get_connection_manager()
+                    await ws_manager.broadcast_to_thread(
+                        thread_id,
+                        "TETHER_MESSAGE",
+                        {
+                            "id": msg_id,
+                            "thread_id": thread_id,
+                            "sender_name": agent_name,
+                            "sender_type": "agent",
+                            "content": content,
+                            "message_type": "ponder_social",
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    logger.info(f"Agent {agent_id} sent tether message to {target}")
+                else:
+                    logger.warning(
+                        f"SOCIALIZE target '{target}' not found in agent registry"
+                    )
 
         elif behavior == "EXPLORE":
             if target and target.lower() != "none":
@@ -515,6 +783,138 @@ async def execute_ponder(
     except Exception as e:
         logger.error(f"PONDER execution failed for {agent_id}: {e}")
         return ("PONDER", f"Error: {e}")
+
+
+async def _record_no_inbox_telemetry(
+    agent_id: str,
+    route: str,
+    outcome: str,
+) -> None:
+    """Persist no-inbox routing telemetry for observability and tuning."""
+    try:
+        cache = get_cache()
+        hash_name = "telemetry:no_inbox"
+        route_key = route.lower()
+        outcome_key = outcome.lower()
+
+        await cache.h_incr(hash_name, "total", 1)
+        await cache.h_incr(hash_name, f"agent:{agent_id}", 1)
+        await cache.h_incr(hash_name, f"route:{route_key}", 1)
+        await cache.h_incr(hash_name, f"route:{route_key}:outcome:{outcome_key}", 1)
+
+        logger.info(
+            f"NO_INBOX_TELEMETRY agent={agent_id} route={route_key} outcome={outcome_key}"
+        )
+    except Exception as e:
+        logger.warning(f"No inbox telemetry write failed: {e}")
+
+
+def _build_idle_explore_query(agent_status: dict) -> str:
+    """Build a concise exploration query from current agent context."""
+    active_project = agent_status.get("active_project")
+    if active_project and active_project.get("title"):
+        return (
+            f"recent developments and practical methods for "
+            f"{active_project['title']}"
+        )
+
+    designation = agent_status.get("designation") or "autonomous ai agents"
+    return f"latest best practices for {designation}"
+
+
+async def route_no_inbox_autonomy(
+    agent_status: dict,
+    db: DatabaseClient,
+) -> Tuple[str, str]:
+    """
+    Route ACT/RESPOND-empty outcomes to useful autonomous work.
+
+    Priority:
+    1. EXPLORE via Perplexity MCP (fallback to Brave search MCP)
+    2. REVIEW via Prism recall + memory note
+    3. PONDER via existing free-time behavior engine
+    4. SLEEP only if all routes are unavailable or fail
+    """
+    agent_id = agent_status["agent_id"]
+    route_order = ["EXPLORE", "REVIEW", "PONDER"]
+
+    # Add variety while preserving required route coverage.
+    random.shuffle(route_order)
+
+    for route in route_order:
+        if route == "EXPLORE":
+            query = _build_idle_explore_query(agent_status)
+            mcp = get_mcp_manager()
+
+            try:
+                if "perplexity" in mcp.sessions:
+                    result = await mcp.execute_tool(
+                        "perplexity",
+                        "perplexity_search",
+                        {"query": query},
+                    )
+                    await _store_ponder_memory(
+                        agent_id,
+                        f"Idle EXPLORE via perplexity_search ('{query}'):\n"
+                        f"{result[:800]}",
+                        "EXPLORE",
+                    )
+                    await _record_no_inbox_telemetry(agent_id, "EXPLORE", "success")
+                    return ("ACT", f"EXPLORE (Perplexity): {query[:90]}")
+
+                if "search" in mcp.sessions:
+                    result = await mcp.execute_tool(
+                        "search",
+                        "brave_web_search",
+                        {"query": query, "count": 3},
+                    )
+                    await _store_ponder_memory(
+                        agent_id,
+                        f"Idle EXPLORE via brave_web_search ('{query}'):\n"
+                        f"{result[:800]}",
+                        "EXPLORE",
+                    )
+                    await _record_no_inbox_telemetry(agent_id, "EXPLORE", "success")
+                    return ("ACT", f"EXPLORE (Search): {query[:90]}")
+
+                logger.info(
+                    "No inbox autonomy EXPLORE skipped: no search MCP sessions"
+                )
+                await _record_no_inbox_telemetry(agent_id, "EXPLORE", "skipped")
+            except Exception as e:
+                logger.warning(f"No inbox autonomy EXPLORE failed: {e}")
+                await _record_no_inbox_telemetry(agent_id, "EXPLORE", "failed")
+
+        elif route == "REVIEW":
+            try:
+                recall = await _get_prism_context(
+                    agent_id,
+                    "recent reflections, unresolved patterns, and useful next steps",
+                )
+                if recall and recall != "Memory retrieval unavailable.":
+                    note = (
+                        "Review sweep complete. Most relevant context:\n"
+                        f"{recall[:600]}"
+                    )
+                    await _store_ponder_memory(agent_id, note, "REVIEW")
+                    await _record_no_inbox_telemetry(agent_id, "REVIEW", "success")
+                    return ("ACT", "REVIEW: revisited recent context")
+            except Exception as e:
+                logger.warning(f"No inbox autonomy REVIEW failed: {e}")
+                await _record_no_inbox_telemetry(agent_id, "REVIEW", "failed")
+
+        elif route == "PONDER":
+            try:
+                _, ponder_details = await execute_ponder(agent_status, db)
+                if ponder_details and not ponder_details.startswith("Error:"):
+                    await _record_no_inbox_telemetry(agent_id, "PONDER", "success")
+                    return ("ACT", f"PONDER: {ponder_details[:90]}")
+            except Exception as e:
+                logger.warning(f"No inbox autonomy PONDER failed: {e}")
+                await _record_no_inbox_telemetry(agent_id, "PONDER", "failed")
+
+    await _record_no_inbox_telemetry(agent_id, "SLEEP", "fallback")
+    return ("SLEEP", "No inbox and no autonomous route available")
 
 
 async def execute_pulse(
@@ -551,20 +951,31 @@ async def execute_pulse(
         logger.warning(f"Agent {agent_id} not found")
         return {"action": "ERROR", "details": "Agent not found"}
 
-    # 2. If user_message present, force ACT mode with message context
+    # 2. If user_message present, force ACT: RESPOND mode
     if user_message:
-        action = "USER_MESSAGE"
-        details = f"User: {user_message}"
+        action = "ACT"
+        details = "RESPOND"
         logger.info(f"User message received: {user_message[:50]}...")
     else:
         # Normal micro-thought generation
         action, details = await generate_micro_thought(status)
 
     # 3. Execute action
-    if action == "ACT" and status["pending_count"] > 0:
+    if action == "ACT" and details and details.strip().startswith("RESPOND"):
+        # Respond to inbox messages
+        action, details = await process_inbox_response(status, db)
+
+        # If no inbox work exists, route into autonomous idle tasks before sleep.
+        if details and details.strip().startswith("No messages to respond to"):
+            action, details = await route_no_inbox_autonomy(status, db)
+    elif action == "ACT" and status["pending_count"] > 0:
         # Process pending tasks
         for task in status["pending_tasks"][:3]:  # Max 3 per cycle
             await process_pending_task(agent_id, task, db, graph)
+    elif action == "ACT":
+        # ACT requested, but no inbox-response or pending task path was viable.
+        # Route to autonomous branch before any fallback to SLEEP.
+        action, details = await route_no_inbox_autonomy(status, db)
     elif action == "PONDER":
         action, details = await execute_ponder(status, db)
 

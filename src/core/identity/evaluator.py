@@ -23,12 +23,13 @@ class ContextEvaluator:
     # TODO: Load this dynamically from the database or registry
     PANTHEON = {
         "Echo": "General query, system status, code execution, file operations.",
-        "Ryuzu": "System administration, git operations, deployment, infrastructure.",
+        "Ryuzu": "Infrastructure, deployment, git operations, system administration, CI/CD, Docker, networking.",
         "Beatrice": "Ethics, governance, philosophy, long-term strategy, guidance.",
         "Albedo": "Architecture, design patterns, branding, high-level planning.",
         "Pandora": "Debugging, fixing errors, reverse engineering, chaos testing.",
-        "Frobisher": "Creative writing, poetry, aesthetics, prose, emotional synthesis.",
-        "Sonmi-451": "Fact-checking, QA, documentation, truth verification."
+        "Cadence": "Creative writing, poetry, aesthetics, prose, emotional synthesis, narrative design.",
+        "Rika Furude": "Narrative atmosphere, sensory writing, emotional subtext, scene moodcraft, lyrical prose.",
+        "Sonmi-451": "Fact-checking, QA, documentation, truth verification, research."
     }
 
     def __init__(self, llm_client: LLMClient):

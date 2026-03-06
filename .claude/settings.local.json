@@ -18,7 +18,16 @@
       "Bash(python -m black:*)",
       "Bash(python -m pytest:*)",
       "Bash(grep:*)",
-      "Bash(python -m py_compile:*)"
+      "Bash(python -m py_compile:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(rm:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(docker compose build:*)",
+      "Bash(docker compose up:*)",
+      "Bash(curl:*)",
+      "Bash(docker compose exec:*)",
+      "Bash(powershell -Command:*)"
     ]
   },
   "hooks": {

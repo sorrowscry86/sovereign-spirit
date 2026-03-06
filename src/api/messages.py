@@ -1,8 +1,11 @@
 """
-Messages API Router
+Messages API Router (DEPRECATED)
 
-Bidirectional communication endpoints for VoidCat Tether interaction.
-Allows users to send messages to the Sovereign Spirit and retrieve conversation history.
+Legacy bidirectional communication endpoints. Superseded by the Tether protocol
+(/api/tether/*) which provides thread-based messaging with read-state tracking.
+
+These routes remain functional for backward compatibility but will be removed
+in a future release. Migrate to /api/tether/send and /api/tether/threads.
 """
 
 import uuid
@@ -19,7 +22,11 @@ from sqlalchemy import text
 
 logger = logging.getLogger("sovereign.messages")
 
-router = APIRouter(prefix="/api/messages", tags=["messages"])
+router = APIRouter(
+    prefix="/api/messages",
+    tags=["messages (deprecated)"],
+    deprecated=True,
+)
 
 
 # Request/Response Models
@@ -42,13 +49,13 @@ class MessageListResponse(BaseModel):
     count: int
 
 
-@router.post("/send", response_model=MessageResponse)
+@router.post("/send", response_model=MessageResponse, deprecated=True)
 async def send_message(request: SendMessageRequest):
     """
     Send a message to the Sovereign Spirit.
 
-    Triggers the heartbeat service to execute a pulse with the user's message
-    as context, allowing the agent to respond.
+    .. deprecated:: 1.2.0
+        Use POST /api/tether/send instead.
     """
     db = get_database()
 
@@ -68,7 +75,7 @@ async def send_message(request: SendMessageRequest):
                 "content": request.content,
                 "timestamp": now,
                 "agent_id": request.agent_id,
-            }
+            },
         )
 
     # Fluid Persona: Evaluate Context and Switch Identity if needed
@@ -79,7 +86,7 @@ async def send_message(request: SendMessageRequest):
         await identity_manager.evaluate_and_sync(
             agent_id=request.agent_id,
             current_spirit=current_spirit,
-            user_message=request.content
+            user_message=request.content,
         )
     except Exception as e:
         logger.warning(f"Fluid Persona evaluation failed: {e}")
@@ -101,17 +108,13 @@ async def send_message(request: SendMessageRequest):
     )
 
 
-@router.get("/history", response_model=MessageListResponse)
-async def get_message_history(
-    limit: int = 50,
-    agent_id: Optional[str] = None
-):
+@router.get("/history", response_model=MessageListResponse, deprecated=True)
+async def get_message_history(limit: int = 50, agent_id: Optional[str] = None):
     """
     Retrieve conversation history.
 
-    Args:
-        limit: Maximum number of messages to return (default: 50)
-        agent_id: Filter by specific agent (optional)
+    .. deprecated:: 1.2.0
+        Use GET /api/tether/threads/:id/messages instead.
     """
     db = get_database()
 
@@ -125,7 +128,7 @@ async def get_message_history(
                     ORDER BY timestamp DESC
                     LIMIT :limit
                 """),
-                {"agent_id": agent_id, "limit": limit}
+                {"agent_id": agent_id, "limit": limit},
             )
         else:
             result = await session.execute(
@@ -135,7 +138,7 @@ async def get_message_history(
                     ORDER BY timestamp DESC
                     LIMIT :limit
                 """),
-                {"limit": limit}
+                {"limit": limit},
             )
 
         rows = result.mappings().all()
@@ -145,7 +148,11 @@ async def get_message_history(
             id=str(row["id"]),
             sender=row["sender"],
             content=row["content"],
-            timestamp=row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
+            timestamp=(
+                row["timestamp"].isoformat()
+                if hasattr(row["timestamp"], "isoformat")
+                else str(row["timestamp"])
+            ),
             agent_id=row["agent_id"],
             thought_id=row.get("thought_id"),
         )
@@ -155,16 +162,13 @@ async def get_message_history(
     return MessageListResponse(messages=messages, count=len(messages))
 
 
-@router.get("/{message_id}", response_model=MessageResponse)
+@router.get("/{message_id}", response_model=MessageResponse, deprecated=True)
 async def get_message(message_id: str):
     """
     Get a specific message by ID.
 
-    Args:
-        message_id: The message UUID
-
-    Raises:
-        HTTPException: 404 if message not found
+    .. deprecated:: 1.2.0
+        Use GET /api/tether/threads/:id/messages instead.
     """
     db = get_database()
 
@@ -175,7 +179,7 @@ async def get_message(message_id: str):
                 FROM messages
                 WHERE id = :id
             """),
-            {"id": message_id}
+            {"id": message_id},
         )
         row = result.mappings().first()
 
@@ -186,7 +190,11 @@ async def get_message(message_id: str):
         id=str(row["id"]),
         sender=row["sender"],
         content=row["content"],
-        timestamp=row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
+        timestamp=(
+            row["timestamp"].isoformat()
+            if hasattr(row["timestamp"], "isoformat")
+            else str(row["timestamp"])
+        ),
         agent_id=row["agent_id"],
         thought_id=row.get("thought_id"),
     )

@@ -171,6 +171,55 @@
   - **Status**: RESOLVED (2026-01-24)
   - **Fix**: Added JSON serialization for dict fields and wrapped in try/except for atomic failure logging.
 
+- [x] **FEAT-005**: Restore Throne source of truth
+  - **Severity**: HIGH
+  - **File**: `voidcat_tether/`
+  - **Description**: Flutter source tree is missing while only compiled assets remain in `src/static/`.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: Restored full Flutter source tree (11 Dart files) under `voidcat_tether/lib/`. `flutter build web` verified to reproduce `src/static/` payload.
+
+- [x] **FEAT-006**: Throne websocket client Tether cutover
+  - **Severity**: HIGH
+  - **File**: `voidcat_tether/lib/services/websocket_service.dart`
+  - **Description**: Migrate UI websocket commands from GOD-centric flow to `TETHER_JOIN`, `TETHER_SEND`, and `TETHER_READ`.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: WebSocketService implements all Tether commands (JOIN/SEND/READ) plus legacy GOD commands. Auto-reconnect with backoff.
+
+- [x] **FEAT-007**: Throne thread UI implementation
+  - **Severity**: MEDIUM
+  - **File**: `voidcat_tether/lib/features/dashboard/`
+  - **Description**: Add thread list, thread timeline, message composer, and read-state updates for unified Tether conversations.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: ThreadPanel with thread list (type icons), message timeline (sender/timestamp/status badges), compose bar (optimistic append), and auto mark-read on incoming messages.
+
+- [x] **FEAT-008**: Fix optimistic UI message duplication in Throne
+  - **Severity**: MEDIUM
+  - **File**: `voidcat_tether/lib/features/dashboard/widgets/thread_panel.dart`
+  - **Description**: Messages optimistically appended to UI are duplicated when the server echoes them back via WebSocket.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: Deduplicated incoming messages by comparing them against pending `local-` messages and replacing them in place.
+
+- [x] **FEAT-009**: Prevent LLM internal monologue leakage into user chat
+  - **Severity**: HIGH
+  - **File**: `src/core/heartbeat/pulse.py`
+  - **Description**: Spirits are exposing their inner reasoning/chain-of-thought to users instead of just their final response.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: Enforced strict `<think>...</think>` tag usage for reasoning via the INBOX_RESPONSE_PROMPT in the core engine.
+
+- [x] **FEAT-010**: Overhaul Pantheon prompts to immersive SDS v3.3 identity projection
+  - **Severity**: HIGH
+  - **File**: `src/core/inference/prompts.py`
+  - **Description**: The system currently uses passive, legacy psychometrics rather than an immersive Identity-First schema.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: Rewrote `build_system_prompt` to output Internal State, Motivation, Voice, Law, and Cognitive Framework according to the SillyTavern SDS v3.3 immersion principles.
+
+- [x] **FEAT-011**: Throne Control Center Overhaul
+  - **Severity**: HIGH
+  - **File**: `voidcat_tether/lib/features/dashboard/`, `src/api/config.py`
+  - **Description**: The UI needs a centralized control center for LLM config, MCP tools, and interagent comm monitoring.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: Implemented tabbed control panel (Bifrost, Tools, Comms) with backend telemetry endpoints. Consolidated Ryuzu and formally renamed Cadence.
+
 ---
 
 ## PHASE 6: THE GRIMOIRE (DOCUMENTATION)
@@ -200,6 +249,20 @@
   - **Description**: No contribution guidelines for new acolytes.
   - **Status**: RESOLVED (2026-01-24)
   - **Fix**: Created `CONTRIBUTING.md` defining the Core Laws and Workflow.
+
+- [x] **DOC-005**: Throne/Tether operator runbook
+  - **Severity**: MEDIUM
+  - **File**: `docs/plans/2026-03-05-throne-tether-operator-runbook.md`
+  - **Description**: Document frontend cutover sequence, rollback strategy, and deprecation window for legacy message routes.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: Added dedicated operator runbook with hard-stop confirmation gate and rollback criteria.
+
+- [x] **DOC-006**: Throne Control Center Project Chronicle
+  - **Severity**: MEDIUM
+  - **File**: `03_The_Archives/04_The_Archives/05_Project_Chronicles/2026-03-05_Throne_Control_Center_Overhaul.md`
+  - **Description**: Document the architectural and UI/UX design choices made for the Control Center.
+  - **Status**: RESOLVED (2026-03-05)
+  - **Fix**: Added new Chronicle entry securely logging Phase 5/6 changes.
 
 ---
 
@@ -242,6 +305,15 @@
   - **Description**: Graceful degradation when LLM/databases unavailable.
   - **Status**: PROPOSED
 
+- [ ] **FUTURE-007**: End-to-end Throne/Tether integration tests
+  - **Description**: Validate join/send/read websocket cycle and heartbeat-driven auto-reply flow through Tether threads.
+  - **Status**: PROPOSED
+
+- [x] **FUTURE-008**: Complete legacy message retirement
+  - **Description**: Deprecate then remove `/api/messages/*` after Throne migration and telemetry confirmation.
+  - **Status**: IN PROGRESS (2026-03-05)
+  - **Fix**: Marked all `/api/messages/*` routes `deprecated=True` in FastAPI. Module docstring updated. Full removal pending telemetry confirmation.
+
 ---
 
 ## PROGRESS TRACKING
@@ -252,12 +324,12 @@
 | Phase 2: CORE MATRIX | 5 | 5 | 100% |
 | Phase 3: WARDS & SECURITY | 4 | 4 | 100% |
 | Phase 4: EFFICIENCY & FLOW | 4 | 4 | 100% |
-| Phase 5: HIGHER FUNCTIONS | 4 | 4 | 100% |
-| Phase 6: THE GRIMOIRE | 4 | 4 | 100% |
-| Phase 7: FUTURE ASCENSION | 8 | 2 | 25% |
-| **OVERALL** | **33** | **27** | **81%** |
+| Phase 5: HIGHER FUNCTIONS | 11 | 11 | 100% |
+| Phase 6: THE GRIMOIRE | 6 | 6 | 100% |
+| Phase 7: FUTURE ASCENSION | 10 | 3 | 30% |
+| **OVERALL** | **44** | **37** | **84%** |
 
 ---
 
-*Last Updated: 2026-01-24*
+*Last Updated: 2026-03-05 19:30 CST*
 *Overseer: The High Evolutionary*

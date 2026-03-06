@@ -35,6 +35,14 @@ MCP_SERVER_REGISTRY = {
             "PATH": os.environ["PATH"],
             "BRAVE_SEARCH_API_KEY": os.getenv("BRAVE_SEARCH_API_KEY", "")
         }
+    },
+    "perplexity": {
+        "command": NPX_PATH,
+        "args": ["-y", "@perplexity-ai/mcp-server"],
+        "env": {
+            "PATH": os.environ["PATH"],
+            "PERPLEXITY_API_KEY": os.getenv("PERPLEXITY_API_KEY", "")
+        }
     }
 }
 
