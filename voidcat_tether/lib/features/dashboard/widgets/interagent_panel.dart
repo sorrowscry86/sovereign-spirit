@@ -25,6 +25,8 @@ class _InteragentPanelState extends State<InteragentPanel> {
   bool _loadingThreads = true;
   bool _loadingMessages = false;
   StreamSubscription? _liveSub;
+  StreamSubscription<ReplyChainEvent>? _chainSub;
+  final List<ReplyChainEvent> _chainEvents = [];
 
   @override
   void initState() {
@@ -36,6 +38,7 @@ class _InteragentPanelState extends State<InteragentPanel> {
   @override
   void dispose() {
     _liveSub?.cancel();
+    _chainSub?.cancel();
     super.dispose();
   }
 
@@ -55,17 +58,28 @@ class _InteragentPanelState extends State<InteragentPanel> {
         }
       }
     });
+
+    _chainSub = ws.onReplyChain.listen((event) {
+      if (_selectedThreadId == null || event.threadId != _selectedThreadId) {
+        return;
+      }
+      if (mounted) {
+        setState(() {
+          if (!_chainEvents.any((e) => e.eventId == event.eventId)) {
+            _chainEvents.add(event);
+          }
+        });
+      }
+    });
   }
 
   Future<void> _loadThreads() async {
     try {
       final api = ApiService();
-      final raw = await api.listThreads(threadType: 'agent_agent', limit: 50);
+      final threads = await api.listThreads(threadType: 'agent_agent', limit: 50);
       if (mounted) {
         setState(() {
-          _threads = (raw as List<dynamic>)
-              .map((j) => TetherThread.fromJson(j as Map<String, dynamic>))
-              .toList();
+          _threads = threads;
           _loadingThreads = false;
         });
       }
@@ -79,6 +93,7 @@ class _InteragentPanelState extends State<InteragentPanel> {
       _selectedThreadId = threadId;
       _loadingMessages = true;
       _messages = [];
+      _chainEvents.clear();
     });
 
     // Subscribe to WebSocket events for this thread
@@ -86,12 +101,10 @@ class _InteragentPanelState extends State<InteragentPanel> {
 
     try {
       final api = ApiService();
-      final raw = await api.getThreadMessages(threadId);
+      final messages = await api.getThreadMessages(threadId);
       if (mounted) {
         setState(() {
-          _messages = (raw as List<dynamic>)
-              .map((j) => TetherMessage.fromJson(j as Map<String, dynamic>))
-              .toList();
+          _messages = messages;
           _loadingMessages = false;
         });
       }
@@ -269,60 +282,100 @@ class _InteragentPanelState extends State<InteragentPanel> {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(10),
-      itemCount: _messages.length,
-      itemBuilder: (context, i) {
-        final msg = _messages[i];
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: Container(
+    return Column(
+      children: [
+        if (_chainEvents.isNotEmpty) _chainStrip(),
+        Expanded(
+          child: ListView.builder(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: ThroneTheme.void2,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: ThroneTheme.accent.withValues(alpha: 0.1),
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      msg.senderName,
-                      style: const TextStyle(
-                        color: ThroneTheme.accent,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                      ),
+            itemCount: _messages.length,
+            itemBuilder: (context, i) {
+              final msg = _messages[i];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: ThroneTheme.void2,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: ThroneTheme.accent.withValues(alpha: 0.1),
                     ),
-                    const Spacer(),
-                    if (msg.createdAt != null)
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            msg.senderName,
+                            style: const TextStyle(
+                              color: ThroneTheme.accent,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (msg.createdAt != null)
+                            Text(
+                              _formatTime(msg.createdAt!),
+                              style: const TextStyle(
+                                color: ThroneTheme.textMuted,
+                                fontSize: 9,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
                       Text(
-                        _formatTime(msg.createdAt!),
+                        msg.content,
                         style: const TextStyle(
-                          color: ThroneTheme.textMuted,
-                          fontSize: 9,
+                          color: ThroneTheme.textPrimary,
+                          fontSize: 12,
+                          height: 1.4,
                         ),
                       ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  msg.content,
-                  style: const TextStyle(
-                    color: ThroneTheme.textPrimary,
-                    fontSize: 12,
-                    height: 1.4,
+                    ],
                   ),
                 ),
-              ],
-            ),
+              );
+            },
           ),
-        );
-      },
+        ),
+      ],
+    );
+  }
+
+  Widget _chainStrip() {
+    final events = _chainEvents.reversed.take(6).toList();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: const BoxDecoration(
+        color: ThroneTheme.void2,
+        border: Border(bottom: BorderSide(color: ThroneTheme.void3)),
+      ),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: events.map((event) {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: ThroneTheme.accent.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              's${event.chainStep} ${event.chainStatus}',
+              style: const TextStyle(
+                color: ThroneTheme.accent,
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
     );
   }
 

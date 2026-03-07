@@ -16,6 +16,8 @@ import random
 import logging
 import uuid
 import re
+import asyncio
+import time
 from typing import Optional, Tuple
 from datetime import datetime, timezone
 
@@ -29,6 +31,7 @@ from src.core.memory.types import EpisodicMemory
 from src.core.cache import get_cache
 from src.core.socket_manager import get_connection_manager
 from src.mcp.client import get_mcp_manager
+from src.mcp.config import MCP_SERVER_REGISTRY
 from src.core.inference.prompts import build_system_prompt
 
 logger = logging.getLogger("sovereign.heartbeat.pulse")
@@ -42,6 +45,9 @@ BASE_INTERVAL_MS = int(os.getenv("HEARTBEAT_INTERVAL_MS", "90000"))
 JITTER_MS = int(os.getenv("HEARTBEAT_JITTER_MS", "15000"))
 MAX_TOKENS = int(os.getenv("HEARTBEAT_MAX_TOKENS", "500"))
 TEMPERATURE = float(os.getenv("HEARTBEAT_TEMPERATURE", "0.6"))
+TOOL_APPROVAL_MODE = os.getenv("TOOL_APPROVAL_MODE", "auto").lower()
+TOOL_APPROVAL_TTL_SECONDS = int(os.getenv("TOOL_APPROVAL_TTL_SECONDS", "300"))
+TOOL_SENSITIVE_TIER_MIN = int(os.getenv("TOOL_SENSITIVE_TIER_MIN", "2"))
 
 # Ollama configuration (deprecated - now uses llm_client)
 # These are kept for backwards compatibility if llm_config.yaml doesn't exist
@@ -102,8 +108,11 @@ Messages:
 Respond to the most important message. Be warm, concise, and in-character.
 Keep response under 150 words.
 
-IMPORTANT: If you need to reason or plan your response, YOU MUST wrap ALL internal monologue inside <think>...</think> tags. 
-Only the final spoken response should be placed outside the tags."""
+IMPORTANT OUTPUT FORMAT (MANDATORY):
+- If you need to reason or plan, wrap that internal monologue in <think>...</think>.
+- Put the user-visible reply in <final>...</final>.
+- Never claim you searched files, checked configs, or ran tools unless the result is present in this thread/tool context.
+"""
 
 PONDER_PROMPT = """[SYSTEM]: You are {agent_name}, {designation}.
 You have free time. No tasks are pending.
@@ -148,6 +157,85 @@ def extract_thought(response: str) -> Tuple[str, Optional[str]]:
         return "", thought_content  # Return empty action for safety
 
     return response.strip(), None
+
+
+def sanitize_visible_reply(response: str) -> str:
+    """
+    Produce the user-visible reply text from model output.
+
+    Priority order:
+    1) <final>...</final> payload if present
+    2) response with <think>...</think> removed
+    3) defensive pruning of obvious planning/meta scaffolding
+    """
+    final_match = re.search(r"<final>(.*?)</final>", response, re.DOTALL | re.IGNORECASE)
+    if final_match:
+        visible = final_match.group(1).strip()
+    else:
+        visible, _ = extract_thought(response)
+
+    # Remove any residual XML-style control tags that should never be shown.
+    visible = re.sub(r"</?(think|final)>", "", visible, flags=re.IGNORECASE).strip()
+    if not visible:
+        return ""
+
+    meta_prefixes = (
+        "okay",
+        "let me",
+        "the user",
+        "i need to",
+        "first",
+        "second",
+        "third",
+        "wait",
+        "actually",
+        "i should",
+        "i think",
+        "now,",
+        "check",
+        "word count",
+        "tools available",
+        "response should",
+        "as ",
+    )
+
+    meta_regex = re.compile(
+        r"\b(i need to|let me|the user|i should|i think|word count|"
+        r"tools available|response should|internal monologue|"
+        r"this is within my domain|i don't have|i do not have|"
+        r"i can report|my response should)\b",
+        re.IGNORECASE,
+    )
+
+    kept_lines = []
+    for raw_line in visible.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Remove planning-heavy sentences even when mixed into a single line.
+        sentences = re.split(r"(?<=[.!?])\s+", line)
+        clean_sentences = []
+        for sentence in sentences:
+            s = sentence.strip()
+            if not s:
+                continue
+            lowered = s.lower()
+            if lowered.startswith(meta_prefixes):
+                continue
+            if meta_regex.search(s):
+                continue
+            clean_sentences.append(s)
+
+        if clean_sentences:
+            kept_lines.append(" ".join(clean_sentences))
+
+    if kept_lines:
+        return "\n".join(kept_lines).strip()
+
+    # Last-resort fallback: keep only the tail sentence fragment.
+    tail = re.split(r"(?<=[.!?])\s+", visible.strip())
+    return tail[-1].strip() if tail else ""
 
 
 def calculate_next_interval() -> float:
@@ -367,6 +455,8 @@ async def process_pending_task(
 
         # Tool call branch — execute and synthesize
         if response.tool_calls:
+            chain_id = f"task-{task_id or uuid.uuid4()}"
+            chain_step = 1
             tool_call = response.tool_calls[0]
             fn = tool_call.get("function", {})
             server_name, tool_name = _resolve_tool_server(fn.get("name", ""), mcp)
@@ -377,7 +467,51 @@ async def process_pending_task(
                 pass
 
             logger.info(f"Agent {agent_id} calling tool: {tool_name} on {server_name}")
+            await _emit_tool_use_event(
+                db=db,
+                thread_id="",
+                agent_id=agent_id,
+                chain_id=chain_id,
+                chain_step=chain_step,
+                chain_status="running",
+                phase="requested",
+                tool_name=tool_name,
+                tool_server=server_name,
+                args_preview=_preview(arguments),
+                result_preview="",
+                duration_ms=None,
+            )
+            await _emit_tool_use_event(
+                db=db,
+                thread_id="",
+                agent_id=agent_id,
+                chain_id=chain_id,
+                chain_step=chain_step,
+                chain_status="running",
+                phase="executing",
+                tool_name=tool_name,
+                tool_server=server_name,
+                args_preview=_preview(arguments),
+                result_preview="",
+                duration_ms=None,
+            )
+            started_at = time.monotonic()
             tool_result = await mcp.execute_tool(server_name, tool_name, arguments)
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            await _emit_tool_use_event(
+                db=db,
+                thread_id="",
+                agent_id=agent_id,
+                chain_id=chain_id,
+                chain_step=chain_step,
+                chain_status="running",
+                phase="completed",
+                tool_name=tool_name,
+                tool_server=server_name,
+                args_preview=_preview(arguments),
+                result_preview=_preview(tool_result),
+                duration_ms=duration_ms,
+            )
 
             # Synthesis call — no tools, just interpret the result
             synthesis_messages = messages + [
@@ -414,6 +548,219 @@ def _resolve_tool_server(tool_name: str, mcp) -> Tuple[str, str]:
         if tool["name"] == tool_name:
             return tool["server"], tool_name
     return "filesystem", tool_name  # Safe fallback
+
+
+def _preview(value: object, limit: int = 500) -> str:
+    """Create bounded previews for audit records and websocket payloads."""
+    text = str(value) if value is not None else ""
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+def _tool_security_tier(server_name: str) -> int:
+    """Resolve security tier from MCP server registry."""
+    entry = MCP_SERVER_REGISTRY.get(server_name, {})
+    try:
+        return int(entry.get("security_tier", 1))
+    except Exception:
+        return 1
+
+
+def _tool_requires_approval(security_tier: int) -> bool:
+    """Decide if a tool invocation requires human approval."""
+    mode = TOOL_APPROVAL_MODE
+    if mode == "ask":
+        return True
+    if mode == "deny_sensitive_only":
+        return security_tier >= TOOL_SENSITIVE_TIER_MIN
+    return False
+
+
+async def _record_tool_event(
+    db: DatabaseClient,
+    event_id: str,
+    agent_id: str,
+    thread_id: str,
+    chain_id: str,
+    chain_step: int,
+    chain_status: str,
+    phase: str,
+    tool_name: Optional[str],
+    tool_server: Optional[str],
+    args_preview: Optional[str],
+    result_preview: Optional[str],
+    duration_ms: Optional[int],
+) -> None:
+    """Persist tool/reply chain lifecycle event. Never blocks main flow on failure."""
+    try:
+        await db.log_tool_execution_event(
+            event_id=event_id,
+            agent_id=agent_id,
+            thread_id=thread_id,
+            chain_id=chain_id,
+            chain_step=chain_step,
+            chain_status=chain_status,
+            phase=phase,
+            tool_name=tool_name,
+            tool_server=tool_server,
+            args_preview=args_preview,
+            result_preview=result_preview,
+            duration_ms=duration_ms,
+        )
+    except Exception as e:
+        logger.warning(f"Tool lifecycle audit write failed: {e}")
+
+
+async def _emit_reply_chain_event(
+    db: DatabaseClient,
+    thread_id: str,
+    agent_id: str,
+    chain_id: str,
+    chain_step: int,
+    chain_status: str,
+    parent_message_id: Optional[str],
+    details: str,
+) -> None:
+    """Broadcast a reply-chain transition and persist it to audit storage."""
+    event_id = str(uuid.uuid4())
+    payload = {
+        "event_id": event_id,
+        "agent_id": agent_id,
+        "thread_id": thread_id,
+        "chain_id": chain_id,
+        "chain_step": chain_step,
+        "chain_status": chain_status,
+        "parent_message_id": parent_message_id,
+        "details": _preview(details),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    ws_manager = get_connection_manager()
+    await ws_manager.broadcast_to_thread(thread_id, "REPLY_CHAIN_EVENT", payload)
+    await _record_tool_event(
+        db=db,
+        event_id=event_id,
+        agent_id=agent_id,
+        thread_id=thread_id,
+        chain_id=chain_id,
+        chain_step=chain_step,
+        chain_status=chain_status,
+        phase="chain_state",
+        tool_name=None,
+        tool_server=None,
+        args_preview=None,
+        result_preview=_preview(details),
+        duration_ms=None,
+    )
+
+
+async def _emit_tool_use_event(
+    db: DatabaseClient,
+    thread_id: str,
+    agent_id: str,
+    chain_id: str,
+    chain_step: int,
+    chain_status: str,
+    phase: str,
+    tool_name: str,
+    tool_server: str,
+    args_preview: str,
+    result_preview: str,
+    duration_ms: Optional[int],
+) -> None:
+    """Broadcast a tool lifecycle event and persist it to audit storage."""
+    event_id = str(uuid.uuid4())
+    payload = {
+        "event_id": event_id,
+        "agent_id": agent_id,
+        "thread_id": thread_id,
+        "chain_id": chain_id,
+        "chain_step": chain_step,
+        "chain_status": chain_status,
+        "phase": phase,
+        "tool": tool_name,
+        "server": tool_server,
+        "args_preview": _preview(args_preview),
+        "result_preview": _preview(result_preview),
+        "duration_ms": duration_ms,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    ws_manager = get_connection_manager()
+    await ws_manager.broadcast_to_thread(thread_id, "TOOL_USE_EVENT", payload)
+    await _record_tool_event(
+        db=db,
+        event_id=event_id,
+        agent_id=agent_id,
+        thread_id=thread_id,
+        chain_id=chain_id,
+        chain_step=chain_step,
+        chain_status=chain_status,
+        phase=phase,
+        tool_name=tool_name,
+        tool_server=tool_server,
+        args_preview=_preview(args_preview),
+        result_preview=_preview(result_preview),
+        duration_ms=duration_ms,
+    )
+
+
+async def _await_tool_approval(
+    db: DatabaseClient,
+    thread_id: str,
+    agent_id: str,
+    chain_id: str,
+    chain_step: int,
+    parent_message_id: Optional[str],
+    tool_name: str,
+    tool_server: str,
+    arguments: dict,
+) -> Tuple[bool, str]:
+    """Wait for human approval with TTL. Timeout defaults to deny."""
+    cache = get_cache()
+    approval_key = f"tool_approval:{chain_id}"
+    await cache.set(approval_key, "waiting", expire=TOOL_APPROVAL_TTL_SECONDS)
+
+    ws_manager = get_connection_manager()
+    await ws_manager.broadcast_to_thread(
+        thread_id,
+        "TOOL_USE_APPROVAL_REQUIRED",
+        {
+            "chain_id": chain_id,
+            "chain_step": chain_step,
+            "agent_id": agent_id,
+            "thread_id": thread_id,
+            "tool": tool_name,
+            "server": tool_server,
+            "args_preview": _preview(arguments),
+            "ttl_seconds": TOOL_APPROVAL_TTL_SECONDS,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    await _emit_reply_chain_event(
+        db=db,
+        thread_id=thread_id,
+        agent_id=agent_id,
+        chain_id=chain_id,
+        chain_step=chain_step,
+        chain_status="waiting_approval",
+        parent_message_id=parent_message_id,
+        details=f"Awaiting approval for {tool_server}.{tool_name}",
+    )
+
+    start = time.monotonic()
+    while (time.monotonic() - start) < TOOL_APPROVAL_TTL_SECONDS:
+        decision = await cache.get(approval_key)
+        if isinstance(decision, bytes):
+            decision = decision.decode("utf-8", errors="ignore")
+
+        if decision in {"approved", "resumed"}:
+            return True, str(decision)
+        if decision in {"denied", "cancelled"}:
+            return False, f"TOOL_USE_DENY({decision})"
+
+        await asyncio.sleep(1)
+
+    await cache.set(approval_key, "timeout", expire=60)
+    return False, "TOOL_USE_DENY(timeout)"
 
 
 async def _get_prism_context(agent_id: str, query: str) -> str:
@@ -491,6 +838,9 @@ async def process_inbox_response(
 
     target_msg = inbox[0]
     thread_id = target_msg["thread_id"]
+    parent_message_id = target_msg["id"]
+    chain_id = str(uuid.uuid4())
+    chain_step = 1
 
     # Pull recent thread history so the model continues the current conversation
     # instead of resetting into generic greeting behavior.
@@ -562,6 +912,27 @@ async def process_inbox_response(
     )
 
     try:
+        await _emit_reply_chain_event(
+            db=db,
+            thread_id=thread_id,
+            agent_id=agent_id,
+            chain_id=chain_id,
+            chain_step=chain_step,
+            chain_status="queued",
+            parent_message_id=parent_message_id,
+            details="Inbox response queued for execution",
+        )
+        await _emit_reply_chain_event(
+            db=db,
+            thread_id=thread_id,
+            agent_id=agent_id,
+            chain_id=chain_id,
+            chain_step=chain_step,
+            chain_status="running",
+            parent_message_id=parent_message_id,
+            details="Generating first response turn",
+        )
+
         response = await client.complete(
             messages=messages,
             max_tokens=400,
@@ -574,6 +945,7 @@ async def process_inbox_response(
         reply_text = response.content.strip()
 
         if response.tool_calls:
+            chain_step += 1
             tool_call = response.tool_calls[0]
             fn = tool_call.get("function", {})
             server_name, tool_name = _resolve_tool_server(fn.get("name", ""), mcp)
@@ -584,29 +956,142 @@ async def process_inbox_response(
                 arguments = {}
 
             logger.info(f"Agent {agent_id} inbox tool call: {tool_name} on {server_name}")
-            tool_result = await mcp.execute_tool(server_name, tool_name, arguments)
-
-            synthesis_messages = messages + [
-                ChatMessage(role="assistant", content=""),
-                ChatMessage(
-                    role="user",
-                    content=(
-                        "Tool result:\n"
-                        f"{tool_result}\n\n"
-                        "Now craft the final in-thread reply. Maintain persona and continuity."
-                    ),
-                ),
-            ]
-            synthesis = await client.complete(
-                messages=synthesis_messages,
-                max_tokens=300,
-                temperature=0.5,
-                use_fallback=True,
-                complexity="reasoning",
+            await _emit_reply_chain_event(
+                db=db,
+                thread_id=thread_id,
+                agent_id=agent_id,
+                chain_id=chain_id,
+                chain_step=chain_step,
+                chain_status="waiting_tool",
+                parent_message_id=parent_message_id,
+                details=f"Preparing tool call {server_name}.{tool_name}",
             )
-            reply_text = synthesis.content.strip()
+            await _emit_tool_use_event(
+                db=db,
+                thread_id=thread_id,
+                agent_id=agent_id,
+                chain_id=chain_id,
+                chain_step=chain_step,
+                chain_status="waiting_tool",
+                phase="requested",
+                tool_name=tool_name,
+                tool_server=server_name,
+                args_preview=_preview(arguments),
+                result_preview="",
+                duration_ms=None,
+            )
 
-        reply_text, _ = extract_thought(reply_text)
+            security_tier = _tool_security_tier(server_name)
+            approved = True
+            deny_reason = ""
+            if _tool_requires_approval(security_tier):
+                approved, deny_reason = await _await_tool_approval(
+                    db=db,
+                    thread_id=thread_id,
+                    agent_id=agent_id,
+                    chain_id=chain_id,
+                    chain_step=chain_step,
+                    parent_message_id=parent_message_id,
+                    tool_name=tool_name,
+                    tool_server=server_name,
+                    arguments=arguments,
+                )
+
+            if not approved:
+                await _emit_tool_use_event(
+                    db=db,
+                    thread_id=thread_id,
+                    agent_id=agent_id,
+                    chain_id=chain_id,
+                    chain_step=chain_step,
+                    chain_status="failed",
+                    phase="failed",
+                    tool_name=tool_name,
+                    tool_server=server_name,
+                    args_preview=_preview(arguments),
+                    result_preview=f"Tool denied ({deny_reason})",
+                    duration_ms=None,
+                )
+                await _emit_reply_chain_event(
+                    db=db,
+                    thread_id=thread_id,
+                    agent_id=agent_id,
+                    chain_id=chain_id,
+                    chain_step=chain_step,
+                    chain_status="failed",
+                    parent_message_id=parent_message_id,
+                    details=f"Tool execution denied ({deny_reason})",
+                )
+                reply_text = (
+                    "Tool execution was denied by approval policy "
+                    f"({deny_reason}). I can proceed with a non-tool response if you want."
+                )
+            else:
+                await _emit_tool_use_event(
+                    db=db,
+                    thread_id=thread_id,
+                    agent_id=agent_id,
+                    chain_id=chain_id,
+                    chain_step=chain_step,
+                    chain_status="running",
+                    phase="executing",
+                    tool_name=tool_name,
+                    tool_server=server_name,
+                    args_preview=_preview(arguments),
+                    result_preview="",
+                    duration_ms=None,
+                )
+                started_at = time.monotonic()
+                tool_result = await mcp.execute_tool(server_name, tool_name, arguments)
+                duration_ms = int((time.monotonic() - started_at) * 1000)
+                await _emit_tool_use_event(
+                    db=db,
+                    thread_id=thread_id,
+                    agent_id=agent_id,
+                    chain_id=chain_id,
+                    chain_step=chain_step,
+                    chain_status="running",
+                    phase="completed",
+                    tool_name=tool_name,
+                    tool_server=server_name,
+                    args_preview=_preview(arguments),
+                    result_preview=_preview(tool_result),
+                    duration_ms=duration_ms,
+                )
+
+                # Map tool output directly into the active context window before the next turn.
+                messages.append(
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            "Tool output injected into active context window:\n"
+                            f"{server_name}.{tool_name} result:\n{tool_result}"
+                        ),
+                    )
+                )
+
+                synthesis_messages = messages + [
+                    ChatMessage(role="assistant", content=""),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            "Tool result:\n"
+                            f"{tool_result}\n\n"
+                            "Now craft the final in-thread reply. Maintain persona and continuity. "
+                            "Output user-visible text in <final>...</final>."
+                        ),
+                    ),
+                ]
+                synthesis = await client.complete(
+                    messages=synthesis_messages,
+                    max_tokens=300,
+                    temperature=0.5,
+                    use_fallback=True,
+                    complexity="reasoning",
+                )
+                reply_text = synthesis.content.strip()
+
+        reply_text = sanitize_visible_reply(reply_text)
         if not reply_text:
             reply_text = "Acknowledged. I will proceed with the current thread context."
 
@@ -653,6 +1138,17 @@ async def process_inbox_response(
             },
         )
 
+        await _emit_reply_chain_event(
+            db=db,
+            thread_id=thread_id,
+            agent_id=agent_id,
+            chain_id=chain_id,
+            chain_step=chain_step,
+            chain_status="completed",
+            parent_message_id=parent_message_id,
+            details="Reply chain completed and posted to thread",
+        )
+
         # Mark processed messages as read
         processed_ids = [msg["id"] for msg in inbox]
         await db.mark_tether_messages_read(processed_ids)
@@ -665,6 +1161,19 @@ async def process_inbox_response(
         return ("ACT", f"RESPOND: {reply_text[:80]}")
 
     except Exception as e:
+        try:
+            await _emit_reply_chain_event(
+                db=db,
+                thread_id=thread_id,
+                agent_id=agent_id,
+                chain_id=chain_id,
+                chain_step=chain_step,
+                chain_status="failed",
+                parent_message_id=parent_message_id,
+                details=f"Inbox response failure: {e}",
+            )
+        except Exception:
+            pass
         logger.error(f"Inbox response failed for {agent_id}: {e}")
         return ("ACT", f"RESPOND error: {e}")
 
@@ -709,8 +1218,11 @@ async def execute_ponder(
             complexity="reasoning",
         )
 
-        raw, _ = extract_thought(response.content.strip())
+        raw = sanitize_visible_reply(response.content.strip())
         behavior, target, content = _parse_ponder_response(raw)
+
+        # Defensive cleanup before persistence/broadcast.
+        content = sanitize_visible_reply(content)
 
         logger.info(f"Agent {agent_id} pondering: {behavior} → {target[:40]}")
 

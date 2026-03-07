@@ -41,7 +41,7 @@ from src.api.config import router as config_router
 from src.api.memory import router as memory_router
 from src.api.stasis import router as stasis_router
 from src.api.projects import router as projects_router
-from src.api.tether import router as tether_router
+from src.api.tether import router as tether_router, legacy_router as tether_legacy_router
 from src.core.database import get_database, StimuliRecord
 from src.core.graph import get_graph
 from src.core.heartbeat import get_heartbeat_service
@@ -441,6 +441,7 @@ app.include_router(memory_router)
 app.include_router(stasis_router)
 app.include_router(projects_router)
 app.include_router(tether_router)
+app.include_router(tether_legacy_router)
 
 
 @app.websocket("/ws/dashboard")
@@ -504,6 +505,7 @@ async def websocket_dashboard(websocket: WebSocket):
                 data = json.loads(data_str)
                 cmd_type = data.get("type")
                 payload = data.get("payload", {})
+                cmd_ack = {"type": "CMD_ACK", "status": "processed", "cmd": cmd_type}
 
                 logger.info(f"Dashboard command received: {cmd_type}")
 
@@ -614,10 +616,38 @@ async def websocket_dashboard(websocket: WebSocket):
                             }
                         )
 
+                elif cmd_type in {
+                    "TOOL_USE_APPROVE",
+                    "TOOL_USE_DENY",
+                    "REPLY_CHAIN_RESUME",
+                    "REPLY_CHAIN_CANCEL",
+                }:
+                    chain_id = payload.get("chain_id")
+                    if not chain_id:
+                        raise ValueError("chain_id is required")
+
+                    cache = get_cache()
+                    approval_key = f"tool_approval:{chain_id}"
+
+                    command_to_state = {
+                        "TOOL_USE_APPROVE": "approved",
+                        "TOOL_USE_DENY": "denied",
+                        "REPLY_CHAIN_RESUME": "resumed",
+                        "REPLY_CHAIN_CANCEL": "cancelled",
+                    }
+                    state = command_to_state[cmd_type]
+                    await cache.set(approval_key, state, expire=600)
+
+                    cmd_ack = {
+                        "type": "CMD_ACK",
+                        "status": "processed",
+                        "cmd": cmd_type,
+                        "chain_id": chain_id,
+                        "chain_status": state,
+                    }
+
                 # Echo back success or simple acknowledgement
-                await websocket.send_json(
-                    {"type": "CMD_ACK", "status": "processed", "cmd": cmd_type}
-                )
+                await websocket.send_json(cmd_ack)
 
             except json.JSONDecodeError:
                 await websocket.send_text(f"Invalid JSON received: {data_str}")

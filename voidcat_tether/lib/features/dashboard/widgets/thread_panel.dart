@@ -35,11 +35,15 @@ class _ThreadPanelState extends State<ThreadPanel> {
   final TextEditingController _composeCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
   StreamSubscription<TetherMessage>? _msgSub;
+  StreamSubscription<ReplyChainEvent>? _chainSub;
+  final List<ReplyChainEvent> _chainEvents = [];
 
   @override
   void initState() {
     super.initState();
-    _msgSub = context.read<WebSocketService>().onMessage.listen(_onLiveMessage);
+    final ws = context.read<WebSocketService>();
+    _msgSub = ws.onMessage.listen(_onLiveMessage);
+    _chainSub = ws.onReplyChain.listen(_onReplyChainEvent);
   }
 
   @override
@@ -57,6 +61,7 @@ class _ThreadPanelState extends State<ThreadPanel> {
   @override
   void dispose() {
     _msgSub?.cancel();
+    _chainSub?.cancel();
     _composeCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -87,6 +92,7 @@ class _ThreadPanelState extends State<ThreadPanel> {
       );
       setState(() {
         _messages = messages;
+        _chainEvents.removeWhere((e) => e.threadId != threadId);
         _loadingMessages = false;
       });
       _scrollToBottom();
@@ -120,6 +126,20 @@ class _ThreadPanelState extends State<ThreadPanel> {
     }
     // Refresh thread list for updated last_activity_at
     _loadThreads();
+  }
+
+  void _onReplyChainEvent(ReplyChainEvent event) {
+    if (event.threadId != widget.activeThreadId) return;
+    if (!mounted) return;
+    setState(() {
+      final exists = _chainEvents.any((e) => e.eventId == event.eventId);
+      if (!exists) {
+        _chainEvents.add(event);
+      }
+      if (_chainEvents.length > 60) {
+        _chainEvents.removeRange(0, _chainEvents.length - 60);
+      }
+    });
   }
 
   void _scrollToBottom() {
@@ -357,11 +377,55 @@ class _ThreadPanelState extends State<ThreadPanel> {
       return _emptyState('No messages yet. Send the first one.');
     }
 
-    return ListView.builder(
-      controller: _scrollCtrl,
-      padding: const EdgeInsets.all(16),
-      itemCount: _messages.length,
-      itemBuilder: (context, i) => _messageBubble(_messages[i]),
+    return Column(
+      children: [
+        if (_chainEvents.isNotEmpty) _chainBadgeRail(),
+        Expanded(
+          child: ListView.builder(
+            controller: _scrollCtrl,
+            padding: const EdgeInsets.all(16),
+            itemCount: _messages.length,
+            itemBuilder: (context, i) => _messageBubble(_messages[i]),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _chainBadgeRail() {
+    final items = _chainEvents.reversed.take(8).toList();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: const BoxDecoration(
+        color: ThroneTheme.void1,
+        border: Border(bottom: BorderSide(color: ThroneTheme.void3)),
+      ),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: items.map((event) {
+          final chainLabel = event.chainId.isNotEmpty
+              ? event.chainId.substring(0, event.chainId.length < 6 ? event.chainId.length : 6)
+              : 'chain';
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: _chainStatusColor(event.chainStatus).withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _chainStatusColor(event.chainStatus).withValues(alpha: 0.4)),
+            ),
+            child: Text(
+              '$chainLabel • s${event.chainStep} • ${event.chainStatus}',
+              style: TextStyle(
+                color: _chainStatusColor(event.chainStatus),
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
     );
   }
 
@@ -381,6 +445,10 @@ class _ThreadPanelState extends State<ThreadPanel> {
     final timeStr = msg.createdAt != null
         ? DateFormat.jm().format(msg.createdAt!.toLocal())
         : '';
+
+    final messageChainEvents = _chainEvents
+        .where((e) => e.parentMessageId != null && e.parentMessageId == msg.id)
+        .toList();
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -416,6 +484,30 @@ class _ThreadPanelState extends State<ThreadPanel> {
               ],
             ),
           ),
+          if (messageChainEvents.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Wrap(
+                spacing: 6,
+                children: messageChainEvents.map((event) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: _chainStatusColor(event.chainStatus).withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      'step ${event.chainStep} • ${event.chainStatus}',
+                      style: TextStyle(
+                        color: _chainStatusColor(event.chainStatus),
+                        fontSize: 9,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
           // Message body
           Container(
             constraints: BoxConstraints(
@@ -439,6 +531,23 @@ class _ThreadPanelState extends State<ThreadPanel> {
         ],
       ),
     );
+  }
+
+  Color _chainStatusColor(String status) {
+    switch (status) {
+      case 'completed':
+        return ThroneTheme.statusOnline;
+      case 'failed':
+      case 'cancelled':
+        return ThroneTheme.danger;
+      case 'waiting_approval':
+        return ThroneTheme.accent;
+      case 'running':
+      case 'waiting_tool':
+        return ThroneTheme.tether;
+      default:
+        return ThroneTheme.textMuted;
+    }
   }
 
   Widget _statusIcon(MessageStatus status) {

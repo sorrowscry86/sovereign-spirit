@@ -102,7 +102,10 @@ class TetherThread {
     if (subject != null && subject!.isNotEmpty) return subject!;
     if (participants.isNotEmpty) {
       final names = participants
-          .map((p) => p['agent_id'] as String? ?? 'Unknown')
+          .map(
+            (p) =>
+                p['name'] as String? ?? p['agent_id'] as String? ?? 'Unknown',
+          )
           .toList();
       return names.join(', ');
     }
@@ -189,4 +192,138 @@ class TetherMessage {
   bool get isFromUser => senderType == SenderType.user;
   bool get isFromAgent => senderType == SenderType.agent;
   bool get isFromSystem => senderType == SenderType.system;
+}
+
+// ── Tool + Reply Chain Events ──
+
+class ToolUseEvent {
+  final String eventId;
+  final String agentId;
+  final String threadId;
+  final String chainId;
+  final int chainStep;
+  final String chainStatus;
+  final String phase;
+  final String tool;
+  final String server;
+  final String argsPreview;
+  final String resultPreview;
+  final int? durationMs;
+  final DateTime? timestamp;
+
+  const ToolUseEvent({
+    required this.eventId,
+    required this.agentId,
+    required this.threadId,
+    required this.chainId,
+    required this.chainStep,
+    required this.chainStatus,
+    required this.phase,
+    required this.tool,
+    required this.server,
+    required this.argsPreview,
+    required this.resultPreview,
+    this.durationMs,
+    this.timestamp,
+  });
+
+  factory ToolUseEvent.fromJson(Map<String, dynamic> json) {
+    return ToolUseEvent(
+      eventId: json['event_id'] as String? ?? '',
+      agentId: json['agent_id'] as String? ?? '',
+      threadId: json['thread_id'] as String? ?? '',
+      chainId: json['chain_id'] as String? ?? '',
+      chainStep: (json['chain_step'] as num?)?.toInt() ?? 0,
+      chainStatus: json['chain_status'] as String? ?? '',
+      phase: json['phase'] as String? ?? '',
+      tool: json['tool'] as String? ?? '',
+      server: json['server'] as String? ?? '',
+      argsPreview: json['args_preview'] as String? ?? '',
+      resultPreview: json['result_preview'] as String? ?? '',
+      durationMs: (json['duration_ms'] as num?)?.toInt(),
+      timestamp: json['timestamp'] != null
+          ? DateTime.tryParse(json['timestamp'] as String)
+          : null,
+    );
+  }
+}
+
+class ToolApprovalRequest {
+  final String chainId;
+  final int chainStep;
+  final String agentId;
+  final String threadId;
+  final String tool;
+  final String server;
+  final String argsPreview;
+  final int ttlSeconds;
+  final DateTime? timestamp;
+
+  const ToolApprovalRequest({
+    required this.chainId,
+    required this.chainStep,
+    required this.agentId,
+    required this.threadId,
+    required this.tool,
+    required this.server,
+    required this.argsPreview,
+    required this.ttlSeconds,
+    this.timestamp,
+  });
+
+  factory ToolApprovalRequest.fromJson(Map<String, dynamic> json) {
+    return ToolApprovalRequest(
+      chainId: json['chain_id'] as String? ?? '',
+      chainStep: (json['chain_step'] as num?)?.toInt() ?? 0,
+      agentId: json['agent_id'] as String? ?? '',
+      threadId: json['thread_id'] as String? ?? '',
+      tool: json['tool'] as String? ?? '',
+      server: json['server'] as String? ?? '',
+      argsPreview: json['args_preview'] as String? ?? '',
+      ttlSeconds: (json['ttl_seconds'] as num?)?.toInt() ?? 300,
+      timestamp: json['timestamp'] != null
+          ? DateTime.tryParse(json['timestamp'] as String)
+          : null,
+    );
+  }
+}
+
+class ReplyChainEvent {
+  final String eventId;
+  final String agentId;
+  final String threadId;
+  final String chainId;
+  final int chainStep;
+  final String chainStatus;
+  final String? parentMessageId;
+  final String details;
+  final DateTime? timestamp;
+
+  const ReplyChainEvent({
+    required this.eventId,
+    required this.agentId,
+    required this.threadId,
+    required this.chainId,
+    required this.chainStep,
+    required this.chainStatus,
+    this.parentMessageId,
+    required this.details,
+    this.timestamp,
+  });
+
+  factory ReplyChainEvent.fromJson(Map<String, dynamic> json) {
+    return ReplyChainEvent(
+      eventId: json['event_id'] as String? ?? '',
+      agentId: json['agent_id'] as String? ?? '',
+      threadId: json['thread_id'] as String? ?? '',
+      chainId: json['chain_id'] as String? ?? '',
+      chainStep: (json['chain_step'] as num?)?.toInt() ?? 0,
+      chainStatus: json['chain_status'] as String? ?? '',
+      parentMessageId: json['parent_message_id'] as String?,
+      details: json['details'] as String? ?? '',
+      timestamp: json['timestamp'] != null
+          ? DateTime.tryParse(json['timestamp'] as String)
+          : null,
+    );
+  }
 }

@@ -162,6 +162,7 @@ class DatabaseClient:
             self._session_factory = async_sessionmaker(
                 self._engine, expire_on_commit=False, class_=AsyncSession
             )
+            await self._ensure_runtime_tables()
             self._initialized = True
             logger.info("Connected to PostgreSQL")
 
@@ -198,6 +199,7 @@ class DatabaseClient:
                         pool_pre_ping=True,
                     )
                     self._session_factory.configure(bind=self._engine)
+                    await self._ensure_runtime_tables()
                     self._initialized = True
                     logger.info("Database connection verified via localhost")
                     return
@@ -213,6 +215,29 @@ class DatabaseClient:
         """Close the database connection pool."""
         await self._engine.dispose()
         logger.info("Database connection closed")
+
+    async def _ensure_runtime_tables(self) -> None:
+        """Create runtime-owned tables used by current middleware features."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS tool_execution_events (
+                        event_id TEXT PRIMARY KEY,
+                        agent_id TEXT NOT NULL,
+                        thread_id TEXT,
+                        chain_id TEXT,
+                        chain_step INTEGER,
+                        chain_status TEXT,
+                        phase TEXT,
+                        tool_name TEXT,
+                        tool_server TEXT,
+                        args_preview TEXT,
+                        result_preview TEXT,
+                        duration_ms INTEGER,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+            )
 
     @asynccontextmanager
     async def session(self):
@@ -1072,18 +1097,40 @@ class DatabaseClient:
                 params,
             )
             rows = result.fetchall()
-            return [
-                {
-                    "id": str(row.id),
-                    "thread_type": row.thread_type,
-                    "subject": row.subject,
-                    "created_by": row.created_by,
-                    "created_at": row.created_at,
-                    "last_activity_at": row.last_activity_at,
-                    "message_count": row.message_count,
-                }
-                for row in rows
-            ]
+            thread_list: List[Dict[str, Any]] = []
+            for row in rows:
+                thread_id = str(row.id)
+                part_result = await session.execute(
+                    text(
+                        """
+                        SELECT a.name, p.joined_at
+                        FROM tether_participants p
+                        JOIN agents a ON p.agent_id = a.id
+                        WHERE p.thread_id = :thread_id
+                        ORDER BY p.joined_at ASC
+                        """
+                    ),
+                    {"thread_id": thread_id},
+                )
+                participants = [
+                    {"name": p.name, "joined_at": p.joined_at}
+                    for p in part_result.fetchall()
+                ]
+
+                thread_list.append(
+                    {
+                        "id": thread_id,
+                        "thread_type": row.thread_type,
+                        "subject": row.subject,
+                        "created_by": row.created_by,
+                        "created_at": row.created_at,
+                        "last_activity_at": row.last_activity_at,
+                        "message_count": row.message_count,
+                        "participants": participants,
+                    }
+                )
+
+            return thread_list
 
     async def get_tether_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
         """Get a single thread with its participants."""
@@ -1126,6 +1173,53 @@ class DatabaseClient:
                 "is_active": row.is_active,
                 "participants": participants,
             }
+
+    async def log_tool_execution_event(
+        self,
+        event_id: str,
+        agent_id: str,
+        thread_id: Optional[str],
+        chain_id: Optional[str],
+        chain_step: Optional[int],
+        chain_status: Optional[str],
+        phase: str,
+        tool_name: Optional[str],
+        tool_server: Optional[str],
+        args_preview: Optional[str],
+        result_preview: Optional[str],
+        duration_ms: Optional[int],
+    ) -> None:
+        """Persist a structured tool/reply-chain audit event."""
+        async with self.session() as session:
+            await session.execute(
+                text("""
+                    INSERT INTO tool_execution_events (
+                        event_id, agent_id, thread_id, chain_id, chain_step,
+                        chain_status, phase, tool_name, tool_server,
+                        args_preview, result_preview, duration_ms, created_at
+                    )
+                    VALUES (
+                        :event_id, :agent_id, :thread_id, :chain_id, :chain_step,
+                        :chain_status, :phase, :tool_name, :tool_server,
+                        :args_preview, :result_preview, :duration_ms, :created_at
+                    )
+                """),
+                {
+                    "event_id": event_id,
+                    "agent_id": agent_id,
+                    "thread_id": thread_id,
+                    "chain_id": chain_id,
+                    "chain_step": chain_step,
+                    "chain_status": chain_status,
+                    "phase": phase,
+                    "tool_name": tool_name,
+                    "tool_server": tool_server,
+                    "args_preview": args_preview,
+                    "result_preview": result_preview,
+                    "duration_ms": duration_ms,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            )
 
 
 # =============================================================================

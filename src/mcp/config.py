@@ -16,17 +16,20 @@ MCP_SERVER_REGISTRY = {
         # SECURITY WARNING: We grant access to the current project directory (os.getcwd()).
         # The Spirit can read/write files here.
         "args": ["-y", "@modelcontextprotocol/server-filesystem", os.getcwd()],
-        "env": {"PATH": os.environ["PATH"]} 
+        "env": {"PATH": os.environ["PATH"]},
+        "security_tier": 3,
     },
     "git": {
         "command": "python",
         "args": ["-m", "src.mcp.servers.git"],
-        "env": {"PATH": os.environ["PATH"], "PYTHONUNBUFFERED": "1"}
+        "env": {"PATH": os.environ["PATH"], "PYTHONUNBUFFERED": "1"},
+        "security_tier": 2,
     },
     "chronos": {
         "command": "python",
         "args": ["-m", "src.mcp.servers.chronos"],
-        "env": {"PATH": os.environ["PATH"], "PYTHONUNBUFFERED": "1"}
+        "env": {"PATH": os.environ["PATH"], "PYTHONUNBUFFERED": "1"},
+        "security_tier": 1,
     },
     "search": {
         "command": NPX_PATH,
@@ -34,7 +37,8 @@ MCP_SERVER_REGISTRY = {
         "env": {
             "PATH": os.environ["PATH"],
             "BRAVE_SEARCH_API_KEY": os.getenv("BRAVE_SEARCH_API_KEY", "")
-        }
+        },
+        "security_tier": 1,
     },
     "perplexity": {
         "command": NPX_PATH,
@@ -42,7 +46,8 @@ MCP_SERVER_REGISTRY = {
         "env": {
             "PATH": os.environ["PATH"],
             "PERPLEXITY_API_KEY": os.getenv("PERPLEXITY_API_KEY", "")
-        }
+        },
+        "security_tier": 1,
     }
 }
 
