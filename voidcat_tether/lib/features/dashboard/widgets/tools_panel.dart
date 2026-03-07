@@ -1,20 +1,26 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../../core/theme.dart';
+import '../../../models/models.dart';
 import '../../../services/api_service.dart';
+import '../../../services/websocket_service.dart';
 
 /// Known MCP server presets with pre-filled command/args.
 class _ServerPreset {
   final String name;
   final String command;
   final List<String> args;
+  final int securityTier;
 
   const _ServerPreset({
     required this.name,
     required this.command,
     required this.args,
+    required this.securityTier,
   });
 }
 
@@ -23,26 +29,31 @@ const Map<String, _ServerPreset> _knownPresets = {
     name: 'filesystem',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-filesystem', '/app'],
+    securityTier: 3,
   ),
   'git': _ServerPreset(
     name: 'git',
     command: 'python',
     args: ['src/mcp/servers/git.py'],
+    securityTier: 2,
   ),
   'chronos': _ServerPreset(
     name: 'chronos',
     command: 'python',
     args: ['src/mcp/servers/chronos.py'],
+    securityTier: 1,
   ),
   'search': _ServerPreset(
     name: 'search',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-brave-search'],
+    securityTier: 1,
   ),
   'perplexity': _ServerPreset(
     name: 'perplexity',
     command: 'npx',
     args: ['-y', '@perplexity-ai/mcp-server'],
+    securityTier: 1,
   ),
 };
 
@@ -70,6 +81,7 @@ class _ToolsPanelState extends State<ToolsPanel> {
   final TextEditingController _customNameCtrl = TextEditingController();
   final TextEditingController _customCommandCtrl = TextEditingController();
   final TextEditingController _customArgsCtrl = TextEditingController();
+  final TextEditingController _customTierCtrl = TextEditingController(text: '1');
   bool _addingServer = false;
 
   // Per-server loading state (for reconnect)
@@ -81,21 +93,52 @@ class _ToolsPanelState extends State<ToolsPanel> {
   final Map<String, String?> _toolTestResults = {};
   final Map<String, bool> _toolTestRunning = {};
 
+  StreamSubscription<ToolUseEvent>? _toolSub;
+  StreamSubscription<ToolApprovalRequest>? _approvalSub;
+  final List<ToolUseEvent> _recentEvents = [];
+  final Map<String, ToolApprovalRequest> _pendingApprovals = {};
+
   @override
   void initState() {
     super.initState();
+    final ws = context.read<WebSocketService>();
+    _toolSub = ws.onToolUse.listen(_onToolEvent);
+    _approvalSub = ws.onToolApprovalRequired.listen(_onApprovalRequired);
     _loadTools();
   }
 
   @override
   void dispose() {
+    _toolSub?.cancel();
+    _approvalSub?.cancel();
     _customNameCtrl.dispose();
     _customCommandCtrl.dispose();
     _customArgsCtrl.dispose();
+    _customTierCtrl.dispose();
     for (final ctrl in _toolArgControllers.values) {
       ctrl.dispose();
     }
     super.dispose();
+  }
+
+  void _onToolEvent(ToolUseEvent event) {
+    if (!mounted) return;
+    setState(() {
+      _recentEvents.insert(0, event);
+      if (_recentEvents.length > 40) {
+        _recentEvents.removeRange(40, _recentEvents.length);
+      }
+      if (event.phase == 'completed' || event.phase == 'failed') {
+        _pendingApprovals.remove(event.chainId);
+      }
+    });
+  }
+
+  void _onApprovalRequired(ToolApprovalRequest request) {
+    if (!mounted) return;
+    setState(() {
+      _pendingApprovals[request.chainId] = request;
+    });
   }
 
   Future<void> _loadTools() async {
@@ -180,14 +223,26 @@ class _ToolsPanelState extends State<ToolsPanel> {
           setState(() => _addingServer = false);
           return;
         }
+        final customTier = int.tryParse(_customTierCtrl.text.trim()) ?? 1;
+        await _api.addMCPServer(
+          name,
+          command,
+          args,
+          securityTier: customTier,
+        );
       } else {
         final preset = _knownPresets[_selectedPreset]!;
         name = preset.name;
         command = preset.command;
         args = preset.args;
+        await _api.addMCPServer(
+          name,
+          command,
+          args,
+          securityTier: preset.securityTier,
+        );
       }
 
-      await _api.addMCPServer(name, command, args);
       await _api.connectMCPServer(name);
       await _loadTools();
 
@@ -275,14 +330,17 @@ class _ToolsPanelState extends State<ToolsPanel> {
 
                           return ListView(
                             padding: const EdgeInsets.all(14),
-                            children: allServerNames
-                                .map(
-                                  (name) => _serverGroup(
-                                    name,
-                                    _servers[name] ?? const [],
-                                  ),
-                                )
-                                .toList(),
+                            children: [
+                              if (_pendingApprovals.isNotEmpty)
+                                _approvalQueueCard(),
+                              if (_recentEvents.isNotEmpty) _toolFeedCard(),
+                              ...allServerNames.map(
+                                (name) => _serverGroup(
+                                  name,
+                                  _servers[name] ?? const [],
+                                ),
+                              ),
+                            ],
                           );
                         },
                       ),
@@ -433,6 +491,8 @@ class _ToolsPanelState extends State<ToolsPanel> {
             _inputField(_customCommandCtrl, 'Command (e.g. npx, python)'),
             const SizedBox(height: 6),
             _inputField(_customArgsCtrl, 'Args (space-separated)'),
+            const SizedBox(height: 6),
+            _inputField(_customTierCtrl, 'Security tier (0-3)'),
           ],
           const SizedBox(height: 10),
 
@@ -581,6 +641,190 @@ class _ToolsPanelState extends State<ToolsPanel> {
   }
 
   // ── Server Group ──
+
+  Widget _approvalQueueCard() {
+    final ws = context.read<WebSocketService>();
+    final approvals = _pendingApprovals.values.toList()
+      ..sort((a, b) => (b.timestamp ?? DateTime.now()).compareTo(
+            a.timestamp ?? DateTime.now(),
+          ));
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: ThroneTheme.void2,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: ThroneTheme.accent.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'APPROVAL REQUIRED',
+            style: TextStyle(
+              color: ThroneTheme.accent,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...approvals.map((req) {
+            final chainLabel = req.chainId.isNotEmpty
+                ? req.chainId.substring(0, req.chainId.length < 8 ? req.chainId.length : 8)
+                : 'unknown';
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: ThroneTheme.void1,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${req.server}.${req.tool}',
+                    style: const TextStyle(
+                      color: ThroneTheme.textPrimary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'chain=$chainLabel step=${req.chainStep} ttl=${req.ttlSeconds}s',
+                    style: const TextStyle(
+                      color: ThroneTheme.textMuted,
+                      fontSize: 10,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 28,
+                          child: ElevatedButton(
+                            onPressed: () => ws.approveToolUse(req.chainId),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: ThroneTheme.statusOnline,
+                              foregroundColor: ThroneTheme.void0,
+                            ),
+                            child: const Text(
+                              'Approve',
+                              style: TextStyle(fontSize: 10),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SizedBox(
+                          height: 28,
+                          child: ElevatedButton(
+                            onPressed: () => ws.denyToolUse(req.chainId),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: ThroneTheme.danger,
+                              foregroundColor: ThroneTheme.void0,
+                            ),
+                            child: const Text(
+                              'Deny',
+                              style: TextStyle(fontSize: 10),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _toolFeedCard() {
+    final items = _recentEvents.take(8).toList();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: ThroneTheme.void2,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: ThroneTheme.void3),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'TOOL FEED',
+            style: TextStyle(
+              color: ThroneTheme.tether,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...items.map((event) {
+            final color = _phaseColor(event.phase);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      event.phase,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${event.server}.${event.tool} (${event.durationMs ?? 0} ms)',
+                      style: const TextStyle(
+                        color: ThroneTheme.textSecondary,
+                        fontSize: 10,
+                        fontFamily: 'monospace',
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Color _phaseColor(String phase) {
+    switch (phase) {
+      case 'completed':
+        return ThroneTheme.statusOnline;
+      case 'failed':
+        return ThroneTheme.danger;
+      case 'executing':
+        return ThroneTheme.accent;
+      default:
+        return ThroneTheme.textMuted;
+    }
+  }
 
   Widget _serverGroup(String serverName, List<Map<String, dynamic>> tools) {
     final isConnected = _connectedServers.contains(serverName);

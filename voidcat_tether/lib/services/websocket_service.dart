@@ -46,6 +46,19 @@ class WebSocketService extends ChangeNotifier {
       StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get onCmdAck => _cmdAckStream.stream;
 
+    final StreamController<ToolUseEvent> _toolUseStream =
+      StreamController<ToolUseEvent>.broadcast();
+    Stream<ToolUseEvent> get onToolUse => _toolUseStream.stream;
+
+    final StreamController<ToolApprovalRequest> _toolApprovalStream =
+      StreamController<ToolApprovalRequest>.broadcast();
+    Stream<ToolApprovalRequest> get onToolApprovalRequired =>
+      _toolApprovalStream.stream;
+
+    final StreamController<ReplyChainEvent> _replyChainStream =
+      StreamController<ReplyChainEvent>.broadcast();
+    Stream<ReplyChainEvent> get onReplyChain => _replyChainStream.stream;
+
   // ════════════════════════════════════════════════════════════════════
   // Connection Lifecycle
   // ════════════════════════════════════════════════════════════════════
@@ -124,6 +137,20 @@ class WebSocketService extends ChangeNotifier {
           _cmdAckStream.add(data);
           break;
 
+        case 'TOOL_USE_EVENT':
+          _toolUseStream.add(ToolUseEvent.fromJson(_extractPayload(data)));
+          break;
+
+        case 'TOOL_USE_APPROVAL_REQUIRED':
+          _toolApprovalStream.add(
+            ToolApprovalRequest.fromJson(_extractPayload(data)),
+          );
+          break;
+
+        case 'REPLY_CHAIN_EVENT':
+          _replyChainStream.add(ReplyChainEvent.fromJson(_extractPayload(data)));
+          break;
+
         default:
           debugPrint('[WS] Unknown event type: $type');
       }
@@ -178,6 +205,14 @@ class WebSocketService extends ChangeNotifier {
     _scheduleReconnect();
   }
 
+  Map<String, dynamic> _extractPayload(Map<String, dynamic> data) {
+    final payload = data['data'] ?? data['payload'];
+    if (payload is Map<String, dynamic>) {
+      return payload;
+    }
+    return data;
+  }
+
   // ════════════════════════════════════════════════════════════════════
   // Outbound — Tether Commands
   // ════════════════════════════════════════════════════════════════════
@@ -211,6 +246,34 @@ class WebSocketService extends ChangeNotifier {
     _send({
       'type': 'TETHER_READ',
       'payload': {'message_ids': messageIds},
+    });
+  }
+
+  void approveToolUse(String chainId) {
+    _send({
+      'type': 'TOOL_USE_APPROVE',
+      'payload': {'chain_id': chainId},
+    });
+  }
+
+  void denyToolUse(String chainId) {
+    _send({
+      'type': 'TOOL_USE_DENY',
+      'payload': {'chain_id': chainId},
+    });
+  }
+
+  void resumeReplyChain(String chainId) {
+    _send({
+      'type': 'REPLY_CHAIN_RESUME',
+      'payload': {'chain_id': chainId},
+    });
+  }
+
+  void cancelReplyChain(String chainId) {
+    _send({
+      'type': 'REPLY_CHAIN_CANCEL',
+      'payload': {'chain_id': chainId},
     });
   }
 
@@ -266,6 +329,9 @@ class WebSocketService extends ChangeNotifier {
     _messageStream.close();
     _statusUpdateStream.close();
     _cmdAckStream.close();
+    _toolUseStream.close();
+    _toolApprovalStream.close();
+    _replyChainStream.close();
     super.dispose();
   }
 }

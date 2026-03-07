@@ -14,7 +14,7 @@ Provides configuration endpoints for:
 import logging
 import os
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal, Optional, Dict, List, Any
 from src.core.llm_config import (
     load_config,
@@ -49,6 +49,15 @@ class InferenceStatus(BaseModel):
     current_route: Literal["LOCAL", "CLOUD"]
     vram_usage: float = 0.0
     cloud_credits_remaining: int = 0  # Placeholder for future implementation
+
+
+class MCPRegistryServerRequest(BaseModel):
+    """Runtime MCP registry entry payload."""
+
+    name: str
+    command: str
+    args: List[str] = Field(default_factory=list)
+    security_tier: int = 1
 
 
 # Global inference configuration (in-memory for now)
@@ -287,14 +296,18 @@ async def get_tool_registry() -> Dict[str, Any]:
     mcp = get_mcp_manager()
     servers: Dict[str, List[Dict[str, str]]] = {}
 
+    from src.mcp.config import MCP_SERVER_REGISTRY
+
     for tool in mcp.available_tools:
         server = tool.get("server", "unknown")
         if server not in servers:
             servers[server] = []
+        security_tier = int(MCP_SERVER_REGISTRY.get(server, {}).get("security_tier", 1))
         servers[server].append(
             {
                 "name": tool["name"],
                 "description": tool.get("description", ""),
+                "security_tier": security_tier,
             }
         )
 
@@ -374,28 +387,34 @@ async def get_mcp_registry() -> Dict[str, Any]:
         registry[name] = {
             "command": config["command"],
             "args": config["args"],
+            "security_tier": int(config.get("security_tier", 1)),
             "connected": name in mcp.sessions,
         }
     return {"servers": registry}
 
 
 @router.post("/tools/registry")
-async def add_mcp_server_to_registry(request: Request) -> Dict[str, Any]:
+async def add_mcp_server_to_registry(payload: MCPRegistryServerRequest) -> Dict[str, Any]:
     """Add or update a server in the MCP registry (runtime only)."""
     from src.mcp.config import MCP_SERVER_REGISTRY
 
-    body = await request.json()
-    name = body.get("name")
-    command = body.get("command")
-    args = body.get("args", [])
+    name = payload.name
+    command = payload.command
+    args = payload.args or []
+    security_tier = max(0, int(payload.security_tier))
     if not name or not command:
         raise HTTPException(status_code=400, detail="'name' and 'command' are required")
     MCP_SERVER_REGISTRY[name] = {
         "command": command,
         "args": args if isinstance(args, list) else args.split(),
         "env": {"PATH": os.environ.get("PATH", "")},
+        "security_tier": security_tier,
     }
-    return {"status": "added", "server": name}
+    return {
+        "status": "added",
+        "server": name,
+        "security_tier": security_tier,
+    }
 
 
 # =============================================================================

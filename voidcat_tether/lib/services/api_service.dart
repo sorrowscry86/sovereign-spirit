@@ -47,7 +47,7 @@ class ApiService extends ChangeNotifier {
   }) async {
     final params = <String, String>{'limit': limit.toString()};
     if (agentId != null) params['agent_id'] = agentId;
-    if (threadType != null) params['type'] = threadType;
+    if (threadType != null) params['thread_type'] = threadType;
 
     final uri = Uri.parse(
       '$_base/api/tether/threads',
@@ -352,11 +352,17 @@ class ApiService extends ChangeNotifier {
     String name,
     String command,
     List<String> args,
+    {int securityTier = 1}
   ) async {
     final res = await _client.post(
       Uri.parse('$_base/config/tools/registry'),
       headers: _headers,
-      body: jsonEncode({'name': name, 'command': command, 'args': args}),
+      body: jsonEncode({
+        'name': name,
+        'command': command,
+        'args': args,
+        'security_tier': securityTier,
+      }),
     );
     return jsonDecode(res.body) as Map<String, dynamic>;
   }

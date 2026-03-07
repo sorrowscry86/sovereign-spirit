@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.core.database import get_database
@@ -22,6 +22,7 @@ from src.core.socket_manager import get_connection_manager
 logger = logging.getLogger("sovereign.tether")
 
 router = APIRouter(prefix="/api/tether", tags=["tether"])
+legacy_router = APIRouter(prefix="/api/v1/tether", tags=["tether-compat"])
 
 
 # =============================================================================
@@ -78,6 +79,13 @@ class SendDirectRequest(BaseModel):
     sender_name: str = "User"
 
 
+class LegacySendRequest(BaseModel):
+    agent_id: str
+    content: Optional[str] = None
+    message: Optional[str] = None
+    sender_name: str = "User"
+
+
 class InboxResponse(BaseModel):
     messages: List[dict]
     count: int
@@ -120,13 +128,15 @@ async def create_thread(request: CreateThreadRequest) -> ThreadResponse:
 async def list_threads(
     agent_id: Optional[str] = None,
     thread_type: Optional[str] = None,
+    legacy_type: Optional[str] = Query(default=None, alias="type"),
     limit: int = 20,
 ) -> List[ThreadResponse]:
     """List conversation threads, optionally filtered."""
     db = get_database()
+    resolved_type = thread_type or legacy_type
     threads = await db.list_tether_threads(
         agent_id=agent_id,
-        thread_type=thread_type,
+        thread_type=resolved_type,
         limit=limit,
     )
     return [ThreadResponse(**t) for t in threads]
@@ -299,30 +309,28 @@ async def mark_inbox_read(
 # =============================================================================
 
 
-@router.post("/send", response_model=TetherMessageResponse)
-async def send_direct_message(request: SendDirectRequest) -> TetherMessageResponse:
-    """
-    Send a message directly to an agent.
-
-    Creates or reuses a user_agent thread automatically.
-    Triggers Fluid Persona evaluation and a heartbeat pulse.
-    """
+async def _send_direct_message_impl(
+    agent_id: str,
+    content: str,
+    sender_name: str,
+) -> TetherMessageResponse:
+    """Shared implementation for direct user->agent message delivery."""
     db = get_database()
     cache = get_cache()
 
     # Verify agent exists
-    agent = await db.get_agent_state(request.agent_id)
+    agent = await db.get_agent_state(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    agent_uuid = await db.get_agent_uuid(request.agent_id)
+    agent_uuid = await db.get_agent_uuid(agent_id)
     if not agent_uuid:
         raise HTTPException(status_code=404, detail="Agent UUID not found")
 
     # Find or create a user_agent thread
     # Look for an existing active thread where this agent participates
     threads = await db.list_tether_threads(
-        agent_id=request.agent_id,
+        agent_id=agent_id,
         thread_type="user_agent",
         limit=1,
     )
@@ -332,17 +340,17 @@ async def send_direct_message(request: SendDirectRequest) -> TetherMessageRespon
     else:
         thread_id = await db.create_tether_thread(
             thread_type="user_agent",
-            created_by=request.sender_name,
+            created_by=sender_name,
             subject=f"Conversation with {agent.name}",
         )
-        await db.add_tether_participant(thread_id, request.agent_id)
+        await db.add_tether_participant(thread_id, agent_id)
 
     # Post the message
     msg_id = await db.post_tether_message(
         thread_id=thread_id,
         sender_type="user",
-        sender_name=request.sender_name,
-        content=request.content,
+        sender_name=sender_name,
+        content=content,
         message_type="chat",
         recipient_agent_id=agent_uuid,
     )
@@ -351,7 +359,7 @@ async def send_direct_message(request: SendDirectRequest) -> TetherMessageRespon
         raise HTTPException(status_code=500, detail="Failed to send message")
 
     # Signal Redis inbox
-    await cache.signal_tether_inbox(request.agent_id, msg_id)
+    await cache.signal_tether_inbox(agent_id, msg_id)
 
     # Broadcast via WebSocket
     ws_manager = get_connection_manager()
@@ -361,9 +369,9 @@ async def send_direct_message(request: SendDirectRequest) -> TetherMessageRespon
         {
             "id": msg_id,
             "thread_id": thread_id,
-            "sender_name": request.sender_name,
+            "sender_name": sender_name,
             "sender_type": "user",
-            "content": request.content,
+            "content": content,
             "message_type": "chat",
             "created_at": datetime.now(timezone.utc).isoformat(),
         },
@@ -374,9 +382,9 @@ async def send_direct_message(request: SendDirectRequest) -> TetherMessageRespon
         identity_manager = get_identity_manager(db)
         current_spirit = agent.designation if agent else "Echo"
         await identity_manager.evaluate_and_sync(
-            agent_id=request.agent_id,
+            agent_id=agent_id,
             current_spirit=current_spirit,
-            user_message=request.content,
+            user_message=content,
         )
     except Exception as e:
         logger.warning(f"Fluid Persona evaluation failed: {e}")
@@ -384,17 +392,65 @@ async def send_direct_message(request: SendDirectRequest) -> TetherMessageRespon
     # Trigger heartbeat pulse
     heartbeat = get_heartbeat_service()
     try:
-        await heartbeat.trigger_once(request.agent_id, user_message=request.content)
+        await heartbeat.trigger_once(agent_id, user_message=content)
     except Exception as e:
         logger.warning(f"Heartbeat trigger failed: {e}")
 
     return TetherMessageResponse(
         id=msg_id,
         thread_id=thread_id,
-        sender_name=request.sender_name,
+        sender_name=sender_name,
         sender_type="user",
-        content=request.content,
+        content=content,
         message_type="chat",
         status="pending",
         created_at=datetime.now(timezone.utc),
+    )
+
+
+def _resolve_legacy_content(request: LegacySendRequest) -> str:
+    """Accept both legacy `message` and canonical `content` payload keys."""
+    content = (request.content or request.message or "").strip()
+    if not content:
+        raise HTTPException(
+            status_code=422,
+            detail="Request must include non-empty `content` or `message`.",
+        )
+    return content
+
+
+@router.post("/send", response_model=TetherMessageResponse)
+async def send_direct_message(request: SendDirectRequest) -> TetherMessageResponse:
+    """
+    Send a message directly to an agent.
+
+    Creates or reuses a user_agent thread automatically.
+    Triggers Fluid Persona evaluation and a heartbeat pulse.
+    """
+    return await _send_direct_message_impl(
+        agent_id=request.agent_id,
+        content=request.content,
+        sender_name=request.sender_name,
+    )
+
+
+@legacy_router.post("/send", response_model=TetherMessageResponse)
+async def send_direct_message_v1(request: SendDirectRequest) -> TetherMessageResponse:
+    """Backward-compatible alias for clients using `/api/v1/tether/send`."""
+    return await _send_direct_message_impl(
+        agent_id=request.agent_id,
+        content=request.content,
+        sender_name=request.sender_name,
+    )
+
+
+@legacy_router.post("/message", response_model=TetherMessageResponse)
+async def send_direct_message_legacy_message(
+    request: LegacySendRequest,
+) -> TetherMessageResponse:
+    """Legacy alias supporting historical `/api/v1/tether/message` payloads."""
+    return await _send_direct_message_impl(
+        agent_id=request.agent_id,
+        content=_resolve_legacy_content(request),
+        sender_name=request.sender_name,
     )
