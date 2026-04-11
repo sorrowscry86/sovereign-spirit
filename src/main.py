@@ -31,10 +31,18 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.middleware.valence_stripping import process_memory_batch, MemoryObject
-from src.middleware.security import verify_api_key, check_rate_limit
+from src.middleware.security import (
+    verify_api_key,
+    check_rate_limit,
+    check_connection_rate_limit,
+    sanitize_agent_name,
+    sanitize_message_content,
+    validate_security_configuration,
+)
 from src.api.agents import router as agents_router
 from src.api.graph import router as graph_router
 from src.api.config import router as config_router
@@ -59,6 +67,7 @@ from src.core.socket_manager import get_connection_manager
 
 WEAVIATE_URL = os.getenv("VOIDC_WEAVIATE_URL", "http://weaviate:8080")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+HIATUS_MODE = os.getenv("SOVEREIGN_HIATUS_MODE", "true").lower() == "true"
 
 # Initialize logging
 logging.basicConfig(
@@ -86,6 +95,12 @@ async def lifespan(app: FastAPI):
     - Close all database connections gracefully
     """
     logger.info("=== SOVEREIGN SPIRIT MIDDLEWARE STARTING ===")
+
+    try:
+        validate_security_configuration()
+    except Exception as e:
+        logger.error(f"Security configuration invalid: {e}")
+        raise
 
     # Initialize LLM client from YAML config
     try:
@@ -121,47 +136,53 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Neo4j initialization failed: {e}")
 
-    # Initialize heartbeat service
+    # Initialize heartbeat service unless the project is intentionally paused.
     heartbeat = get_heartbeat_service()
-    try:
-        await heartbeat.start()
-        logger.info(
-            f"Heartbeat service started: {len(heartbeat.registered_agents)} agents"
-        )
-    except Exception as e:
-        logger.error(f"Heartbeat initialization failed: {e}")
+    if HIATUS_MODE:
+        logger.warning("SOVEREIGN_HIATUS_MODE is enabled: heartbeat startup skipped")
+    else:
+        try:
+            await heartbeat.start()
+            logger.info(
+                f"Heartbeat service started: {len(heartbeat.registered_agents)} agents"
+            )
+        except Exception as e:
+            logger.error(f"Heartbeat initialization failed: {e}")
 
-    # Initialize MCP tool servers
+    # Initialize MCP tool servers only when active operations are enabled.
     mcp = get_mcp_manager()
-    try:
-        await mcp.connect_server("filesystem")
-        logger.info(
-            f"MCP filesystem server connected ({len(mcp.available_tools)} tools)"
-        )
-    except Exception as e:
-        logger.warning(f"MCP filesystem server failed to connect: {e}")
-
-    if os.getenv("BRAVE_SEARCH_API_KEY"):
+    if HIATUS_MODE:
+        logger.warning("SOVEREIGN_HIATUS_MODE is enabled: MCP server connections skipped")
+    else:
         try:
-            await mcp.connect_server("search")
+            await mcp.connect_server("filesystem")
             logger.info(
-                f"MCP search server connected ({len(mcp.available_tools)} tools total)"
+                f"MCP filesystem server connected ({len(mcp.available_tools)} tools)"
             )
         except Exception as e:
-            logger.warning(f"MCP search server failed to connect: {e}")
-    else:
-        logger.info("MCP search server skipped (BRAVE_SEARCH_API_KEY not set)")
+            logger.warning(f"MCP filesystem server failed to connect: {e}")
 
-    if os.getenv("PERPLEXITY_API_KEY"):
-        try:
-            await mcp.connect_server("perplexity")
-            logger.info(
-                f"MCP Perplexity server connected ({len(mcp.available_tools)} tools total)"
-            )
-        except Exception as e:
-            logger.warning(f"MCP Perplexity server failed to connect: {e}")
-    else:
-        logger.info("MCP Perplexity server skipped (PERPLEXITY_API_KEY not set)")
+        if os.getenv("BRAVE_SEARCH_API_KEY"):
+            try:
+                await mcp.connect_server("search")
+                logger.info(
+                    f"MCP search server connected ({len(mcp.available_tools)} tools total)"
+                )
+            except Exception as e:
+                logger.warning(f"MCP search server failed to connect: {e}")
+        else:
+            logger.info("MCP search server skipped (BRAVE_SEARCH_API_KEY not set)")
+
+        if os.getenv("PERPLEXITY_API_KEY"):
+            try:
+                await mcp.connect_server("perplexity")
+                logger.info(
+                    f"MCP Perplexity server connected ({len(mcp.available_tools)} tools total)"
+                )
+            except Exception as e:
+                logger.warning(f"MCP Perplexity server failed to connect: {e}")
+        else:
+            logger.info("MCP Perplexity server skipped (PERPLEXITY_API_KEY not set)")
 
     # Initialize ngrok tunnel for remote access (if enabled)
     ngrok_tunnel = None
@@ -302,6 +323,13 @@ async def security_middleware(request: Request, call_next):
     # Check rate limit first
     await check_rate_limit(request)
 
+    # Global operational kill-switch used for temporary project hiatus.
+    if HIATUS_MODE and request.url.path != "/health":
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Project is in hiatus mode"},
+        )
+
     # Proceed with request
     response = await call_next(request)
     return response
@@ -422,8 +450,9 @@ async def health_check():
     graph = get_graph()
 
     return {
-        "status": "online",
+        "status": "hiatus" if HIATUS_MODE else "online",
         "version": "1.2.0",
+        "hiatus_mode": HIATUS_MODE,
         "proxy_target": WEAVIATE_URL,
         "database": "connected" if db._initialized else "disconnected",
         "graph": "connected" if graph._initialized else "disconnected",
@@ -450,7 +479,25 @@ async def websocket_dashboard(websocket: WebSocket):
     Real-time connection for The Throne (Dashboard 2.0).
     Broadcasts Spirit State, Logs, and Heartbeat events.
     """
+    if HIATUS_MODE:
+        await websocket.accept()
+        await websocket.send_json(
+            {"type": "SYSTEM", "status": "hiatus", "detail": "Project is in hiatus mode"}
+        )
+        await websocket.close(code=1013)
+        return
+
     manager = get_connection_manager()
+
+    # Apply the same API-key guard used by HTTP endpoints.
+    try:
+        await verify_api_key(websocket)
+        await check_connection_rate_limit(websocket)
+    except HTTPException as exc:
+        logger.warning(f"Dashboard websocket auth rejected: {exc.detail}")
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(websocket)
 
     db_client = get_database()
@@ -501,31 +548,41 @@ async def websocket_dashboard(websocket: WebSocket):
         while True:
             # Keep alive and listen for "God Mode" commands
             data_str = await websocket.receive_text()
+            cmd_type = "UNKNOWN"
             try:
+                await check_connection_rate_limit(websocket)
                 data = json.loads(data_str)
                 cmd_type = data.get("type")
                 payload = data.get("payload", {})
+                if not isinstance(payload, dict):
+                    payload = {}
                 cmd_ack = {"type": "CMD_ACK", "status": "processed", "cmd": cmd_type}
 
                 logger.info(f"Dashboard command received: {cmd_type}")
 
                 if cmd_type == "GOD_SYNC":
-                    agent_id = payload.get("agent_id", "sovereign-001")
+                    agent_id = sanitize_agent_name(
+                        payload.get("agent_id", "sovereign-001")
+                    )
                     target = payload.get("spirit")
                     if target:
                         await identity_mgr.sync_agent_identity(agent_id, target)
                         logger.info(f"GOD_SYNC: {agent_id} synced to {target}")
 
                 elif cmd_type == "GOD_MOOD":
-                    agent_id = payload.get("agent_id", "sovereign-001")
+                    agent_id = sanitize_agent_name(
+                        payload.get("agent_id", "sovereign-001")
+                    )
                     mood = payload.get("mood")
                     if mood:
                         await db_client.update_agent_mood(agent_id, mood)
                         logger.info(f"GOD_MOOD: {agent_id} moved to {mood}")
 
                 elif cmd_type == "GOD_STIMULI":
-                    agent_id = payload.get("agent_id", "sovereign-001")
-                    content = payload.get("content")
+                    agent_id = sanitize_agent_name(
+                        payload.get("agent_id", "sovereign-001")
+                    )
+                    content = sanitize_message_content(payload.get("content") or "")
                     if content:
                         cache = get_cache()
                         agent_uuid = await db_client.get_agent_uuid(agent_id)
@@ -563,15 +620,49 @@ async def websocket_dashboard(websocket: WebSocket):
                 # --- Tether Protocol Commands ---
                 elif cmd_type == "TETHER_JOIN":
                     thread_id = payload.get("thread_id")
-                    if thread_id:
-                        manager.subscribe(thread_id, websocket)
-                        logger.info(f"Socket subscribed to thread {thread_id}")
+                    agent_id = sanitize_agent_name(payload.get("agent_id") or "")
+                    if not thread_id or not agent_id:
+                        raise ValueError("thread_id and agent_id are required")
+
+                    thread = await db_client.get_tether_thread(thread_id)
+                    if not thread:
+                        raise ValueError("thread not found")
+
+                    participants = thread.get("participants", [])
+                    is_participant = any(
+                        str(p.get("name", "")).lower() == agent_id.lower()
+                        for p in participants
+                    )
+                    if not is_participant:
+                        raise PermissionError("agent is not a participant in this thread")
+
+                    manager.subscribe(thread_id, websocket)
+                    logger.info(f"Socket subscribed to thread {thread_id} as {agent_id}")
 
                 elif cmd_type == "TETHER_SEND":
                     thread_id = payload.get("thread_id")
-                    agent_id = payload.get("agent_id")
-                    content = payload.get("content")
+                    agent_id = sanitize_agent_name(payload.get("agent_id") or "")
+                    content = sanitize_message_content(payload.get("content") or "")
                     if thread_id and agent_id and content:
+                        thread = await db_client.get_tether_thread(thread_id)
+                        if not thread:
+                            raise ValueError("thread not found")
+
+                        participants = thread.get("participants", [])
+                        is_participant = any(
+                            str(p.get("name", "")).lower() == agent_id.lower()
+                            for p in participants
+                        )
+                        if not is_participant:
+                            raise PermissionError(
+                                "agent is not a participant in this thread"
+                            )
+
+                        if not manager.is_subscribed(thread_id, websocket):
+                            raise PermissionError(
+                                "websocket is not subscribed to this thread"
+                            )
+
                         cache = get_cache()
                         agent_uuid = await db_client.get_agent_uuid(agent_id)
                         msg_id = await db_client.post_tether_message(
@@ -623,10 +714,53 @@ async def websocket_dashboard(websocket: WebSocket):
                     "REPLY_CHAIN_CANCEL",
                 }:
                     chain_id = payload.get("chain_id")
-                    if not chain_id:
-                        raise ValueError("chain_id is required")
+                    thread_id = payload.get("thread_id")
+                    agent_id = sanitize_agent_name(payload.get("agent_id") or "")
+                    if not chain_id or not thread_id:
+                        raise ValueError("chain_id and thread_id are required")
+
+                    if not agent_id:
+                        raise ValueError("agent_id is required")
+
+                    thread = await db_client.get_tether_thread(thread_id)
+                    if not thread:
+                        raise ValueError("thread not found")
+                    participants = thread.get("participants", [])
+                    is_participant = any(
+                        str(p.get("name", "")).lower() == agent_id.lower()
+                        for p in participants
+                    )
+                    if not is_participant:
+                        raise PermissionError("agent is not a participant in this thread")
+
+                    if not manager.is_subscribed(thread_id, websocket):
+                        raise PermissionError("websocket is not subscribed to this thread")
 
                     cache = get_cache()
+                    approval_ctx_key = f"tool_approval_ctx:{chain_id}"
+                    raw_ctx = await cache.get(approval_ctx_key)
+                    if not raw_ctx:
+                        raise ValueError("approval context is missing or expired")
+
+                    if isinstance(raw_ctx, bytes):
+                        raw_ctx = raw_ctx.decode("utf-8", errors="ignore")
+                    try:
+                        approval_ctx = json.loads(raw_ctx)
+                    except Exception as exc:
+                        raise ValueError("approval context is invalid") from exc
+
+                    if approval_ctx.get("thread_id") != thread_id:
+                        raise PermissionError("approval context mismatch")
+                    if approval_ctx.get("chain_id") != chain_id:
+                        raise PermissionError("approval chain mismatch")
+                    if approval_ctx.get("status") != "waiting":
+                        raise ValueError("approval chain is not waiting")
+
+                    expected_token = approval_ctx.get("decision_token")
+                    supplied_token = payload.get("decision_token")
+                    if expected_token and supplied_token != expected_token:
+                        raise PermissionError("decision token mismatch")
+
                     approval_key = f"tool_approval:{chain_id}"
 
                     command_to_state = {
@@ -638,12 +772,26 @@ async def websocket_dashboard(websocket: WebSocket):
                     state = command_to_state[cmd_type]
                     await cache.set(approval_key, state, expire=600)
 
+                    approval_ctx["status"] = state
+                    approval_ctx["decided_at"] = datetime.now(timezone.utc).isoformat()
+                    await cache.set(approval_ctx_key, json.dumps(approval_ctx), expire=600)
+
                     cmd_ack = {
                         "type": "CMD_ACK",
                         "status": "processed",
                         "cmd": cmd_type,
                         "chain_id": chain_id,
+                        "thread_id": thread_id,
+                        "agent_id": agent_id,
                         "chain_status": state,
+                    }
+
+                else:
+                    cmd_ack = {
+                        "type": "CMD_ACK",
+                        "status": "failed",
+                        "cmd": cmd_type,
+                        "error": "Unknown command",
                     }
 
                 # Echo back success or simple acknowledgement
@@ -651,8 +799,12 @@ async def websocket_dashboard(websocket: WebSocket):
 
             except json.JSONDecodeError:
                 await websocket.send_text(f"Invalid JSON received: {data_str}")
+            except HTTPException as e:
+                logger.warning(f"Dashboard command rejected: {e.detail}")
+                await websocket.close(code=1008)
+                break
             except Exception as e:
-                logger.error(f"Error processing command {data_str}: {e}")
+                logger.error(f"Error processing dashboard command type={cmd_type}: {e}")
                 await websocket.send_json(
                     {"type": "CMD_ACK", "status": "failed", "error": str(e)}
                 )
