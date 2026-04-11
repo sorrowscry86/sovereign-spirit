@@ -15,16 +15,15 @@ import os
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Set
 
-from src.core.heartbeat.pulse import (
-    execute_pulse,
-    calculate_next_interval,
-)
+from src.core.heartbeat.pulse import calculate_next_interval
+from src.core.kernel.runtime import run_kernel_pulse
 from src.core.database import DatabaseClient, get_database
 from src.core.graph import GraphClient, get_graph
 from src.core.memory.stasis_chamber import StasisChamber
 from src.core.cache import get_cache
 
 logger = logging.getLogger("sovereign.heartbeat.service")
+HIATUS_MODE = os.getenv("SOVEREIGN_HIATUS_MODE", "true").lower() == "true"
 
 # =============================================================================
 # Heartbeat Service
@@ -71,6 +70,12 @@ class HeartbeatService:
         """
         if self._running:
             logger.warning("Heartbeat service already running")
+            return
+
+        if HIATUS_MODE:
+            logger.warning(
+                "SOVEREIGN_HIATUS_MODE is enabled: heartbeat service start skipped"
+            )
             return
 
         self._running = True
@@ -207,6 +212,12 @@ class HeartbeatService:
             logger.warning(f"Agent {agent_id} already registered")
             return False
 
+        if HIATUS_MODE:
+            logger.warning(
+                f"SOVEREIGN_HIATUS_MODE is enabled: register_agent skipped for {agent_id}"
+            )
+            return False
+
         # Verify agent exists
         agent = await self._db.get_agent_state(agent_id)
         if not agent:
@@ -304,7 +315,11 @@ class HeartbeatService:
                     pass
 
                 # Execute pulse
-                result = await execute_pulse(agent_id, self._db, self._graph)
+                result = await run_kernel_pulse(
+                    agent_id=agent_id,
+                    db=self._db,
+                    graph=self._graph,
+                )
 
                 # Broadcast via WebSocket (The Observatorium)
                 from src.core.socket_manager import get_connection_manager
@@ -346,8 +361,22 @@ class HeartbeatService:
             agent_id: The agent to trigger
             user_message: Optional user message to inject as context
         """
-        return await execute_pulse(
-            agent_id, self._db, self._graph, user_message=user_message
+        if HIATUS_MODE:
+            logger.warning(
+                f"SOVEREIGN_HIATUS_MODE is enabled: trigger_once skipped for {agent_id}"
+            )
+            return {
+                "agent_id": agent_id,
+                "action": "HIATUS",
+                "thought": "Project is in hiatus mode",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        return await run_kernel_pulse(
+            agent_id=agent_id,
+            db=self._db,
+            graph=self._graph,
+            user_message=user_message,
         )
 
     # =========================================================================
