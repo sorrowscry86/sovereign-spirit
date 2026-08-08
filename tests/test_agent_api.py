@@ -9,6 +9,7 @@ Unit tests for the Agent Management API endpoints.
 """
 
 import pytest
+import importlib
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,13 +54,22 @@ def mock_graph():
 # Tests
 # =============================================================================
 
+@pytest.fixture(autouse=True)
+def disable_hiatus_mode(monkeypatch):
+    import src.main as main_module
+    monkeypatch.setattr(main_module, "HIATUS_MODE", False)
+
+
 class TestAgentAPI:
+
     """Tests for the Agent API endpoints."""
     
     def test_stimuli_endpoint_exists(self, mock_database, mock_graph):
         """Test that the stimuli endpoint is accessible."""
-        with patch("src.api.agents.get_database", return_value=mock_database), \
-             patch("src.api.agents.get_graph", return_value=mock_graph):
+        agents_module = importlib.import_module("src.api.agents")
+
+        with patch.object(agents_module, "get_database", return_value=mock_database), \
+             patch.object(agents_module, "get_graph", return_value=mock_graph):
             from src.main import app
             client = TestClient(app)
             
