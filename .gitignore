@@ -39,6 +39,7 @@ htmlcov/
 # Claude Code temp files
 tmpclaude-*-cwd
 .claude/worktrees/
+.specstory/
 
 # Playwright MCP screenshots
 .playwright-mcp/
@@ -51,3 +52,8 @@ stasis_tanks_test/
 *.csv
 *.png
 repomix-output.xml
+
+# Session/output dumps (may capture secrets from live edits)
+Sovereign-Spirit-output.md
+Sovereign-Spirit-output.txt
+voidcat_tether/tablet_logs.txt
